@@ -1,5 +1,5 @@
 # Keyword ODE step: return a derivative for each state. Euler is `u ← u + du`.
-# Several states / several LSTMs use the same pattern (see constructHybridODE).
+# Several states / several LSTMs: see h2cm.jl.
 
 function mOnePool_step(; C, rb, Q10, ta, tref = 15.0f0)
     reco = rb .* C .* Q10 .^ (0.1f0 .* (ta .- tref))
