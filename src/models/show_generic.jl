@@ -182,26 +182,6 @@ function Base.show(io::IO, ::MIME"text/plain", hm::MultiNNHybridModel)
     return show(io_full, MIME"text/plain"(), hm.parameters)
 end
 
-function Base.show(io::IO, ::MIME"text/plain", hm::ODEHybridModel)
-    _print_header(io, "Hybrid Model (ODE-LSTM)")
-    _print_field(io, "predictors", hm.predictors)
-    _print_field(io, "lstm_param_names", hm.lstm_param_names, value_color = :light_blue)
-    _print_field(io, "forcing", hm.forcing)
-    _print_field(io, "targets", hm.targets)
-    _print_field(io, "state_names", hm.state_names, value_color = :magenta)
-    _print_field(io, "deriv_names", hm.deriv_names, value_color = :magenta)
-    _print_field(io, "feedback_names", hm.feedback_names, value_color = :magenta)
-    _print_field(io, "mechanistic_model", hm.mechanistic_model, value_color = :light_blue)
-    _print_field(io, "global_param_names", hm.global_param_names, value_color = :green)
-    _print_field(io, "fixed_param_names", hm.fixed_param_names, value_color = :yellow)
-    _print_field(io, "static_nn_param_names", hm.static_nn_param_names, value_color = :light_blue)
-    _print_field(io, "scale_nn_outputs", hm.scale_nn_outputs, value_color = hm.scale_nn_outputs ? :green : :red)
-    println(io)
-    _print_header(io, "Parameters:", color = :light_blue, bold = false)
-    io_full = IOContext(IndentedIO(io), :compact => false, :limit => false)
-    return show(io_full, MIME"text/plain"(), hm.parameters)
-end
-
 mutable struct IndentedIO{IOType <: IO} <: IO
     io::IOType
     indent::String

@@ -8,8 +8,9 @@
 #   H2CM LSTM 3 (rb, alpha_Es)      → group :rb
 #   H2CM FC  (WUE, alpha_T)         → group :wue  (LSTM here; H2CM uses a dense net)
 #   H2CM FC_Static (sm_max, alpha_Ei) → static_predictors
-#   H2CM 12-D static embedding      → raw static columns in each group's predictors
+#   H2CM 12-D static embedding      → static_features (precomputed, first timestep)
 #   H2CM spin-up                    → not yet; windows start from zero ICs
+# `:wue` omits `feedback` → non-interacting (no state in the NN input).
 
 using EasyHybrid
 using DimensionalData
@@ -100,10 +101,10 @@ targets = [:ET, :gpp, :nee, :tws, :runoff]
 
 h2cm = constructHybridODE(
     (
-        water = [:rn, :prec, static_cols...],
-        cue = [:rn, :tair, :vpd, :CO2, static_cols...],
-        rb = [:rn, :prec, static_cols...],
-        wue = [:rn, :vpd, static_cols...],
+        water = [:rn, :prec],
+        cue = [:rn, :tair, :vpd, :CO2],
+        rb = [:rn, :prec],
+        wue = [:rn, :vpd],
     ),
     forcing,
     targets,
@@ -119,11 +120,11 @@ h2cm = constructHybridODE(
     hidden_dims = 16,
     state = [:swe, :SM, :GW],
     deriv = [:dswe, :dSM, :dGW],
+    static_features = static_cols,
     feedback = (
         water = [:rel_SM, :swe, :GW, :fAPAR],
         cue = [:rel_SM, :fAPAR, :npp],
         rb = [:npp, :fAPAR],
-        wue = [:rel_SM],
     ),
     static_predictors = (;
         sm_max = static_cols,
