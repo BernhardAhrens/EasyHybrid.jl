@@ -6,7 +6,7 @@
 #   H2CM LSTM 1 (water partitioning) → group :water
 #   H2CM LSTM 2 (CUE, fAPAR)        → group :cue
 #   H2CM LSTM 3 (rb, alpha_Es)      → group :rb
-#   H2CM FC  (WUE, alpha_T)         → group :wue  (LSTM here; H2CM uses a dense net)
+#   H2CM FC  (WUE, alpha_T)         → group :wue  (`recurrent=false`; H2CM uses a dense net)
 #   H2CM FC_Static (sm_max, alpha_Ei) → static_predictors
 #   H2CM 12-D static embedding      → static_features (precomputed, first timestep)
 #   H2CM spin-up                    → not yet; windows start from zero ICs
@@ -118,6 +118,7 @@ h2cm = constructHybridODE(
     ),
     [:Q10, :beta_snow, :beta_baseflow, :beta_co2];
     hidden_dims = 16,
+    recurrent = (wue = false,),
     state = [:swe, :SM, :GW],
     deriv = [:dswe, :dSM, :dGW],
     static_features = static_cols,

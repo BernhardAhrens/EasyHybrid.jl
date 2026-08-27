@@ -13,12 +13,12 @@ like the initial ODE state.
 
 | Kind | Architecture | Runs | Example |
 |------|-------------|------|---------|
-| LSTM params | shared LSTM → Dense | per-timestep, inside the loop | `rb` (basal respiration) |
+| Dynamic params | LSTM → Dense, or feedforward Chain | per-timestep, inside the loop | `rb` |
 | Static NN params | independent feedforward NNs | once per window, before the loop | `C` (initial carbon pool) |
 
-The LSTM receives `[predictors; static_features; ODE_state]` at each step (C feedback).
+Dynamic NNs receive `[predictors; static_features]` at each step.
+`feedback` is opt-in (`true` or a name list) and concatenates ODE state (or other carry).
 `static_features` are precomputed (first timestep) and do not evolve.
-NNs with empty `feedback` are non-interacting: they do not receive the ODE state.
 Static NNs receive the first timestep of their input features and produce
 a scalar per sample.  If the ODE `state_name` (e.g. `:C`) is among the
 static NN params, its output is used as the initial condition C₀.
@@ -27,7 +27,7 @@ static NN params, its output is used as the initial condition C₀.
 `state` / `deriv` may be a `Vector` of names.
 
 # Fields
-- `lstm_cells`, `projs`: LSTM + projection per NN group
+- `lstm_cells`, `projs`: LSTM + projection per group; feedforward groups are a `Chain` (no proj)
 - `static_NNs`: `NamedTuple` of `Chain`s, one per static neural param (empty if none)
 - `static_predictors`: `NamedTuple` mapping each static param → its input feature names
 - `static_features`: precomputed feature names, concatenated once per window
@@ -88,6 +88,7 @@ model = constructHybridODE(
     [:Q10, :C];                   # global_param_names (C₀ trainable scalar)
     hidden_dims = 16,
     state = :C, deriv = :dC,
+    feedback = true,
 )
 ```
 
@@ -103,13 +104,15 @@ model = constructHybridODE(
     [:Q10];                       # global_param_names
     hidden_dims = 16,
     state = :C, deriv = :dC,
+    feedback = true,
     static_predictors = (; C = [:soil_moisture, :clay_fraction]),
     static_hidden_layers = (; C = [8, 8]),
 )
 ```
 
 # Keyword Arguments
-- `hidden_dims::Int = 16`: LSTM hidden state size (`Int` or `NamedTuple` per NN)
+- `hidden_dims::Int = 16`: LSTM hidden size, or feedforward hidden width (`Int` or `NamedTuple`)
+- `recurrent=true`: LSTM. `false` → feedforward inside the loop. NamedTuple per NN; omitted → LSTM
 - `n_state::Int = 1`: dimensionality of ODE state
 - `state::Symbol = :C`: name of the ODE state variable (`Symbol` or `Vector{Symbol}`).
   If this name appears in `parameters`, the initial condition is taken from there
@@ -119,8 +122,8 @@ model = constructHybridODE(
 - `static_features::Vector{Symbol} = Symbol[]`: precomputed features (first timestep),
   concatenated to every dynamic NN
 - `feedback=nothing`: extra inputs to each dynamic NN besides predictors/`static_features`.
-  `nothing` → ODE state(s) (interacting). `Symbol[]` → non-interacting (no state).
-  A `NamedTuple` is per NN; omitted NNs are non-interacting.
+  Off by default. `true` → all ODE states. `Symbol` / `Vector` / `NamedTuple` lists names;
+  omitted NNs get none.
 - `scale_nn_outputs::Bool = true`: apply sigmoid scaling to NN outputs
 - `start_from_default::Bool = true`: initialize global params at their default values
 - `static_predictors::NamedTuple = (;)`: per-param input features for static NNs.
@@ -138,6 +141,7 @@ function constructHybridODE(
         lstm_param_names,
         global_param_names::Vector{Symbol};
         hidden_dims::Union{Int, NamedTuple} = 16,
+        recurrent::Union{Bool, NamedTuple} = true,
         n_state::Int = 1,
         state::Union{Symbol, Vector{Symbol}} = :C,
         deriv::Union{Symbol, Vector{Symbol}} = :dC,
@@ -183,8 +187,13 @@ function constructHybridODE(
         n_in = length(lstm_predictors[name]) + n_static + n_fb
         n_in > 0 || throw(ArgumentError("NN :$name needs predictors, static_features, or feedback"))
         hd = hidden_dims isa NamedTuple ? hidden_dims[name] : hidden_dims
-        lstm_cells = merge(lstm_cells, NamedTuple{(name,)}((LSTMCell(n_in => hd),)))
-        projs = merge(projs, NamedTuple{(name,)}((Dense(hd => n_out),)))
+        if _is_recurrent(recurrent, name)
+            lstm_cells = merge(lstm_cells, NamedTuple{(name,)}((LSTMCell(n_in => hd),)))
+            projs = merge(projs, NamedTuple{(name,)}((Dense(hd => n_out),)))
+        else
+            nn = prepare_hidden_chain([hd, hd], n_in, n_out)
+            lstm_cells = merge(lstm_cells, NamedTuple{(name,)}((nn,)))
+        end
     end
 
     # ---- static NNs (one per static param, à la MultiNNHybridModel) ----
@@ -199,7 +208,7 @@ function constructHybridODE(
     end
 
     config = (;
-        hidden_dims, n_state, state, deriv, static_features, feedback,
+        hidden_dims, recurrent, n_state, state, deriv, static_features, feedback,
         scale_nn_outputs, start_from_default, static_hidden_layers, static_activation, kwargs...,
     )
 
@@ -231,12 +240,19 @@ function _wrap_lstm_groups(predictors::Vector{Symbol}, lstm_param_names::Vector{
 end
 _wrap_lstm_groups(predictors::NamedTuple, lstm_param_names::NamedTuple) = predictors, lstm_param_names
 
-# nothing → interacting (all states). empty → non-interacting.
-# NamedTuple: listed NNs get those names; omitted NNs are non-interacting.
+# Opt-in: nothing/false/[] → none. true → all states.
+# NamedTuple: listed NNs get those names; omitted NNs get none.
+_is_recurrent(recurrent::Bool, _) = recurrent
+_is_recurrent(recurrent::NamedTuple, name) = get(recurrent, name, true)
+
 function _resolve_feedback(feedback::Nothing, lstm_names, state_names)
-    fb_each = NamedTuple{Tuple(lstm_names)}(ntuple(_ -> copy(state_names), length(lstm_names)))
-    return fb_each, copy(state_names)
+    return _resolve_feedback(Symbol[], lstm_names, state_names)
 end
+_resolve_feedback(feedback::Bool, lstm_names, state_names) =
+    feedback ? _resolve_feedback(state_names, lstm_names, state_names) :
+    _resolve_feedback(Symbol[], lstm_names, state_names)
+_resolve_feedback(feedback::Symbol, lstm_names, state_names) =
+    _resolve_feedback(Symbol[feedback], lstm_names, state_names)
 function _resolve_feedback(feedback::AbstractVector{Symbol}, lstm_names, state_names)
     fb = collect(feedback)
     fb_each = NamedTuple{Tuple(lstm_names)}(ntuple(_ -> copy(fb), length(lstm_names)))
@@ -427,14 +443,20 @@ function _run_lstms(m, pred_cache, stat, t, phys_carry, lstm_carry, ps, st_cells
     nn_kw = (;)
     new_carry = (;)
     new_st_cells = (;)
-    new_st_projs = (;)
+    new_st_projs = st_projs
     for name in keys(m.lstm_cells)
         pred_t = pred_cache[name][:, t, :]
         fb = m.lstm_feedback[name]
         x = vcat(pred_t, stat, ntuple(i -> phys_carry[fb[i]], length(fb))...)
-        cell_in = lstm_carry isa NamedTuple ? (x, lstm_carry[name]) : x
-        (h, c), st_c = Lux.apply(m.lstm_cells[name], cell_in, ps.lstm_cells[name], st_cells[name])
-        raw, st_p = Lux.apply(m.projs[name], h, ps.projs[name], st_projs[name])
+        if haskey(m.projs, name)
+            cell_in = lstm_carry isa NamedTuple && haskey(lstm_carry, name) ? (x, lstm_carry[name]) : x
+            (h, c), st_c = Lux.apply(m.lstm_cells[name], cell_in, ps.lstm_cells[name], st_cells[name])
+            raw, st_p = Lux.apply(m.projs[name], h, ps.projs[name], st_projs[name])
+            new_carry = merge(new_carry, NamedTuple{(name,)}((c,)))
+            new_st_projs = merge(new_st_projs, NamedTuple{(name,)}((st_p,)))
+        else
+            raw, st_c = Lux.apply(m.lstm_cells[name], x, ps.lstm_cells[name], st_cells[name])
+        end
         pnames = m.lstm_param_names[name]
         n_nn = length(pnames)
         nn_scaled = if m.scale_nn_outputs
@@ -443,9 +465,7 @@ function _run_lstms(m, pred_cache, stat, t, phys_carry, lstm_carry, ps, st_cells
             ntuple(i -> raw[i:i, :], n_nn)
         end
         nn_kw = merge(nn_kw, (; zip(pnames, nn_scaled)...))
-        new_carry = merge(new_carry, NamedTuple{(name,)}((c,)))
         new_st_cells = merge(new_st_cells, NamedTuple{(name,)}((st_c,)))
-        new_st_projs = merge(new_st_projs, NamedTuple{(name,)}((st_p,)))
     end
     return nn_kw, new_carry, new_st_cells, new_st_projs
 end

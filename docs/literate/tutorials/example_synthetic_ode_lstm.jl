@@ -43,7 +43,7 @@ Single-pool carbon ODE step.  Returns the derivative `dC` and observable `reco`.
 """
 function mOnePool_step(; C, rb, Q10, ta, tref = 15.0f0)
     reco = rb .* C .* Q10 .^ (0.1f0 .* (ta .- tref))
-    dC   = .- reco
+    dC = .- reco
     return (; dC, reco, Q10, rb, C)
 end
 
@@ -62,7 +62,7 @@ function mOnePool_dC(; C, rb, Q10, ta, tref = 15.0f0)
 end
 
 function addODEProblem(model, u0, t, p, derivs)
-    probm = ODEProblem(fMicrobialModel, um0, tspan, pdefault)
+    return probm = ODEProblem(fMicrobialModel, um0, tspan, pdefault)
 end
 
 
@@ -74,16 +74,16 @@ end
 # have it land in `fixed_param_names` (frozen at its default).
 
 parameters = (
-    rb  = (3.0f0, 0.0f0, 13.0f0),
+    rb = (3.0f0, 0.0f0, 13.0f0),
     Q10 = (2.0f0, 1.0f0, 4.0f0),
-    C   = (100.0f0, 10.0f0, 500.0f0),
+    C = (100.0f0, 10.0f0, 500.0f0),
 )
 
 # ## 5. Configure Model Components
 
-forcing    = [:ta]
+forcing = [:ta]
 predictors = [:sw_pot, :dsw_pot]
-target     = [:reco]
+target = [:reco]
 
 global_param_names = [:Q10]
 lstm_param_names = Vector{Symbol}()
@@ -105,6 +105,7 @@ hode = constructHybridODE(
     hidden_dims = 16,
     state = :C,
     deriv = :dC,
+    feedback = true,
     scale_nn_outputs = true,
 )
 
@@ -114,17 +115,17 @@ hode = constructHybridODE(
 # `split_into_sequences` produce 3D tensors `(features, time, batch)`.
 
 pref_array_type = :DimArray
-input_window  = 10
+input_window = 10
 output_window = 1
-output_shift  = 1
+output_shift = 1
 
 sdf = split_data(
     df, hode;
     sequence_kwargs = (;
-        input_window  = input_window,
+        input_window = input_window,
         output_window = output_window,
-        output_shift  = output_shift,
-        lead_time     = 0,
+        output_shift = output_shift,
+        lead_time = 0,
     ),
     array_type = pref_array_type,
 );
@@ -152,20 +153,20 @@ out_ode = train(
     hode,
     df;
     train_cfg = EasyHybrid.TrainConfig(
-        nepochs       = 2,
-        batchsize     = 128,
-        opt           = RMSProp(0.01),
+        nepochs = 2,
+        batchsize = 128,
+        opt = RMSProp(0.01),
         training_loss = :nseLoss,
-        loss_types    = [:nse],
-        plotting      = false,
+        loss_types = [:nse],
+        plotting = false,
         show_progress = false,
     ),
     data_cfg = EasyHybrid.DataConfig(
-        sequence_length       = input_window,
+        sequence_length = input_window,
         sequence_output_window = output_window,
-        sequence_output_shift  = output_shift,
-        sequence_lead_time     = 0,
-        array_type             = pref_array_type,
+        sequence_output_shift = output_shift,
+        sequence_lead_time = 0,
+        array_type = pref_array_type,
     ),
 );
 
@@ -194,6 +195,7 @@ hode_static = constructHybridODE(
     hidden_dims = 16,
     state = :C,
     deriv = :dC,
+    feedback = true,
     scale_nn_outputs = true,
     static_predictors = (; C = [:sw_pot, :dsw_pot]),  # static NN for C₀
     static_hidden_layers = (; C = [8, 8]),
@@ -210,21 +212,21 @@ out_ode_static = train(
     hode_static,
     df;
     train_cfg = EasyHybrid.TrainConfig(
-        nepochs       = 100,
-        batchsize     = 128,
-        opt           = RMSProp(0.01),
+        nepochs = 100,
+        batchsize = 128,
+        opt = RMSProp(0.01),
         training_loss = :nseLoss,
-        loss_types    = [:nse],
-        plotting      = false,
+        loss_types = [:nse],
+        plotting = false,
         show_progress = false,
-        model_name    = "mOnePool_ode_lstm_static_C0",
+        model_name = "mOnePool_ode_lstm_static_C0",
     ),
     data_cfg = EasyHybrid.DataConfig(
-        sequence_length       = input_window,
+        sequence_length = input_window,
         sequence_output_window = output_window,
-        sequence_output_shift  = output_shift,
-        sequence_lead_time     = 0,
-        array_type             = pref_array_type,
+        sequence_output_shift = output_shift,
+        sequence_lead_time = 0,
+        array_type = pref_array_type,
     ),
 );
 
