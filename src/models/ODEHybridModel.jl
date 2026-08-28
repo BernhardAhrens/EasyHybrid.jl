@@ -19,9 +19,11 @@ like the initial ODE state.
 Dynamic NNs receive `predictors` at each step.
 Put `state` names (or other process carry) in `predictors` to feed them into the NN;
 names not found in the data are taken from the ODE loop.
-Columns that do not vary over time in a window are treated as static: a group
-whose predictors are all static is run once (e.g. `sm_max`). A group whose neural
-params include a `state` name is also run once and used as C₀.
+Columns that do not vary over time in a window are treated as static.
+A predictor group whose inputs are all static is run once (e.g. `sm_max`);
+a group that predicts a `state` name is run once as C₀ (initialization only).
+Forcings use the same check: static columns are reused in the loop, time-varying
+ones (e.g. temperature) are indexed every step.
 
 `predictors` / `neural_param_names` may be a `NamedTuple` of groups (several LSTMs);
 `state` / `deriv` may be a `Vector` of names.
@@ -250,11 +252,10 @@ end
 # Forward pass — explicit time loop (SpiralClassifier pattern)
 
 function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
-    data_vars, T_len, B, ET, pred_cache, forc_3d, carry_names, static_groups, dyn_groups = ChainRulesCore.ignore_derivatives() do
+    data_vars, T_len, B, ET, pred_cache, carry_names, static_groups, dyn_groups, dyn_forc_names, static_forc_names = ChainRulesCore.ignore_derivatives() do
         dv = _data_vars(ds_k)
         T_len, B, ET = _ode_time_batch(ds_k, m, dv)
         pred_cache = _pred_cache(ds_k, m, dv)
-        forc_3d = isempty(m.forcing) ? nothing : toArray(ds_k, m.forcing)
         static_vars = Set{Symbol}(p for p in keys(pred_cache) if _is_static_series(pred_cache[p]))
         static_groups = [
             n for n in keys(m.lstm_cells) if
@@ -262,7 +263,9 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
                 _is_static_group(m.lstm_predictors[n], static_vars)
         ]
         dyn_groups = [n for n in keys(m.lstm_cells) if n ∉ static_groups]
-        return dv, T_len, B, ET, pred_cache, forc_3d, _carry_names(m, dv), static_groups, dyn_groups
+        dyn_forc_names = [f for f in m.forcing if haskey(pred_cache, f) && f ∉ static_vars]
+        static_forc_names = [f for f in m.forcing if haskey(pred_cache, f) && f in static_vars]
+        return dv, T_len, B, ET, pred_cache, _carry_names(m, dv), static_groups, dyn_groups, dyn_forc_names, static_forc_names
     end
 
     # ── static groups: run once per window, before the time loop ──
@@ -298,10 +301,13 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
     fixed_names = [f for f in m.fixed_param_names if f ∉ sns]
     fixed_kw = isempty(fixed_names) ? (;) : (; zip(fixed_names, Tuple(st.fixed[f] for f in fixed_names))...)
 
-    # ── static NN params that are NOT the ODE state (constant through the loop) ──
+    # ── static NN params that are NOT the ODE state, plus static forcings ──
     static_non_state_names = [n for n in keys(static_kw) if n ∉ sns]
     static_non_state_kw = isempty(static_non_state_names) ? (;) :
         (; zip(static_non_state_names, [static_kw[n] for n in static_non_state_names])...)
+    static_forc_kw = isempty(static_forc_names) ? (;) :
+        (; zip(static_forc_names, [pred_cache[f][:, 1, :] for f in static_forc_names])...)
+    static_loop_kw = merge(static_non_state_kw, static_forc_kw)
 
     dyn_param_names = unique(reduce(vcat, (collect(m.neural_param_names[n]) for n in dyn_groups); init = Symbol[]))
 
@@ -310,7 +316,7 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
         m, pred_cache, 1, phys_carry, nothing, ps, st_cells, st_projs, dyn_groups
     )
     result_1, phys_carry = _ode_inner_step(
-        m, nn_kw_1, phys_carry, forc_3d, 1, global_kw, fixed_kw, static_non_state_kw
+        m, nn_kw_1, phys_carry, pred_cache, dyn_forc_names, 1, global_kw, fixed_kw, static_loop_kw
     )
 
     # Accumulate *all* mechanistic outputs (not just targets) via vcat (mutation-free for AD)
@@ -324,7 +330,7 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
             m, pred_cache, t, phys_carry, lstm_carry, ps, st_cells, st_projs, dyn_groups
         )
         result_t, phys_carry = _ode_inner_step(
-            m, nn_kw_t, phys_carry, forc_3d, t, global_kw, fixed_kw, static_non_state_kw
+            m, nn_kw_t, phys_carry, pred_cache, dyn_forc_names, t, global_kw, fixed_kw, static_loop_kw
         )
         result_trajs = NamedTuple{Tuple(result_names)}(
             Tuple(vcat(result_trajs[k], result_t[k]) for k in result_names)
@@ -364,6 +370,10 @@ function _pred_cache(ds_k, m, data_vars)
             (p in data_vars && p ∉ m.state_names && !haskey(cache, p)) || continue
             cache = merge(cache, NamedTuple{(p,)}((toArray(ds_k, [p]),)))
         end
+    end
+    for f in m.forcing
+        (f in data_vars && f ∉ m.state_names && !haskey(cache, f)) || continue
+        cache = merge(cache, NamedTuple{(f,)}((toArray(ds_k, [f]),)))
     end
     return cache
 end
@@ -417,17 +427,13 @@ function _run_lstms(m, pred_cache, t, phys_carry, lstm_carry, ps, st_cells, st_p
 end
 
 """
-Inner step: merge NN params with static/global/fixed, call mechanistic model, Euler-update state.
+Inner step: merge NN params with static/global/fixed/static-forcings and time-varying forcings, call mechanistic model, Euler-update state.
 """
-function _ode_inner_step(m, nn_kw, phys_carry, forc_3d, t, global_kw, fixed_kw, static_non_state_kw)
-    if forc_3d !== nothing
-        forc_t = forc_3d[:, t, :]
-        forc_kw = (; zip(m.forcing, [forc_t[i:i, :] for i in 1:length(m.forcing)])...)
-    else
-        forc_kw = (;)
-    end
+function _ode_inner_step(m, nn_kw, phys_carry, pred_cache, dyn_forc_names, t, global_kw, fixed_kw, static_loop_kw)
+    dyn_forc_kw = isempty(dyn_forc_names) ? (;) :
+        (; zip(dyn_forc_names, [pred_cache[f][:, t, :] for f in dyn_forc_names])...)
     state_kw = (; zip(m.state_names, Tuple(phys_carry[n] for n in m.state_names))...)
-    result = m.mechanistic_model(; merge(nn_kw, global_kw, fixed_kw, static_non_state_kw, forc_kw, state_kw)...)
+    result = m.mechanistic_model(; merge(nn_kw, global_kw, fixed_kw, static_loop_kw, dyn_forc_kw, state_kw)...)
 
     new_states = NamedTuple{Tuple(m.state_names)}(
         Tuple(phys_carry[s] .+ result[d] for (s, d) in zip(m.state_names, m.deriv_names))

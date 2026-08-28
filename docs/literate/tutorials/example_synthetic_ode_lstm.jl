@@ -81,7 +81,7 @@ parameters = (
 
 # ## 5. Configure Model Components
 
-forcing = [:ta]
+forcing = [:ta]  # time-varying; indexed every ODE step (unlike C₀, which is init-only)
 predictors = [:sw_pot, :dsw_pot]
 target = [:reco]
 
