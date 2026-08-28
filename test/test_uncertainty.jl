@@ -109,6 +109,31 @@ end
     @test length(u.metadata.seeds) == 3
 end
 
+@testset "Uncertainty: pure NN model (SingleNNModel)" begin
+    df = _uq_data(300)
+    nn = constructNNModel(_PRED, [:reco];
+        hidden_layers = Chain(Dense(8, 8, relu), Dropout(0.3), Dense(8, 8, relu), Dropout(0.3)),
+        activation = relu, scale_nn_outputs = true, input_batchnorm = false)
+    @test nn isa EasyHybrid.SingleNNModel
+    @test EasyHybrid.dropout_rates(nn) == [0.3, 0.3]
+
+    res = train(nn, df; _TRAIN_KW...)
+    u = estimate_uncertainty(MCDropout(n_samples = 20), nn, df, res)
+    @test length(u.mean.reco) == nrow(df)
+    @test mean(u.std.reco) > 0            # dropout stochasticity
+    @test isempty(u.params)               # pure NN has no global params
+
+    # deep ensemble also works on a pure NN model
+    ude = estimate_uncertainty(DeepEnsemble(n_models = 3), nn, df; verbose = false, _TRAIN_KW...)
+    @test ude.n == 3
+    @test isempty(ude.params)
+
+    # a pure NN without dropout is rejected by MC dropout
+    nn_nd = constructNNModel(_PRED, [:reco]; hidden_layers = [8, 8], activation = relu)
+    res_nd = train(nn_nd, df; _TRAIN_KW...)
+    @test_throws ArgumentError estimate_uncertainty(MCDropout(n_samples = 5), nn_nd, df, res_nd)
+end
+
 @testset "Uncertainty: bootstrap and combined ensemble" begin
     df = _uq_data(120)
     u_boot = estimate_uncertainty(Bootstrap(n_models = 3), _model_global(), df; verbose = false, _TRAIN_KW...)

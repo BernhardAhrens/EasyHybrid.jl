@@ -190,11 +190,11 @@ function _dropout_rates(x)
 end
 
 """
-    dropout_rates(model::HybridModel) -> Vector{Float64}
+    dropout_rates(model) -> Vector{Float64}
 
 Return the dropout probabilities of every `Dropout` layer in the model's neural
-network(s). An empty vector means the network has no dropout, so MC dropout is
-not applicable.
+network(s). Works for `HybridModel`, `SingleNNModel` and `MultiNNModel`. An empty
+vector means the network has no dropout, so MC dropout is not applicable.
 """
 function dropout_rates(model::HybridModel)
     nns = model.NNs
@@ -208,23 +208,40 @@ function dropout_rates(model::HybridModel)
         return _dropout_rates(nns)
     end
 end
+dropout_rates(model::SingleNNModel) = _dropout_rates(model.NN)
+function dropout_rates(model::MultiNNModel)
+    rates = Float64[]
+    for nn in values(model.NNs)
+        append!(rates, _dropout_rates(nn))
+    end
+    return rates
+end
+
+# Model types supported by uncertainty quantification.
+const UQModel = Union{HybridModel, SingleNNModel, MultiNNModel}
+
+# Estimated global (physical) parameters, if any. Pure NN models have none.
+_global_param_names(m::HybridModel) = m.global_param_names
+_global_param_names(::UQModel) = Symbol[]
 
 # -----------------------------------------------------------------------------
 # Prediction / aggregation helpers
 # -----------------------------------------------------------------------------
 
 # Forward pass returning a NamedTuple of per-target prediction vectors.
-function _predict_targets(model::HybridModel, x, ps, st)
+function _predict_targets(model::UQModel, x, ps, st)
     out, _ = model(x, ps, st)
     return NamedTuple(t => vec(out[t]) for t in model.targets)
 end
 
 # Forward pass returning both per-target predictions and the scalar value of each
 # estimated global parameter (constant across observations).
-function _predict_targets_and_params(model::HybridModel, x, ps, st)
+function _predict_targets_and_params(model::UQModel, x, ps, st)
     out, _ = model(x, ps, st)
     tgt = NamedTuple(t => vec(out[t]) for t in model.targets)
-    prm = NamedTuple(g => Float64(first(vec(out.parameters[g]))) for g in model.global_param_names)
+    gnames = _global_param_names(model)
+    prm = isempty(gnames) ? NamedTuple() :
+        NamedTuple(g => Float64(first(vec(out.parameters[g]))) for g in gnames)
     return tgt, prm
 end
 
@@ -340,14 +357,14 @@ function estimate_uncertainty end
 
 # --- MC dropout --------------------------------------------------------------
 function estimate_uncertainty(
-        method::MCDropout, model::HybridModel, data, train_output::TrainResults;
+        method::MCDropout, model::UQModel, data, train_output::TrainResults;
         eval_data = data, quantiles::Tuple{<:Real, <:Real} = (0.025, 0.975),
     )
     # Guard 1: MC dropout cannot represent uncertainty of estimated global params.
-    if !isempty(model.global_param_names)
+    if !isempty(_global_param_names(model))
         throw(ArgumentError(
             "MC dropout is not applicable: the model estimates global parameter(s) " *
-            "$(model.global_param_names). Global (physical) parameters are single point " *
+            "$(_global_param_names(model)). Global (physical) parameters are single point " *
             "estimates that dropout does not perturb, so MC dropout would report no " *
             "uncertainty for them. Use DeepEnsemble or Bootstrap instead."
         ))
@@ -388,7 +405,7 @@ end
 
 # --- Deep ensemble & bootstrap (shared runner) -------------------------------
 function _ensemble_uncertainty(
-        method::UncertaintyMethod, model::HybridModel, data;
+        method::UncertaintyMethod, model::UQModel, data;
         seeds::Vector{Int}, use_bootstrap::Bool, eval_data, quantiles, verbose, train_kwargs,
     )
     x_eval = prepare_data(model, eval_data)[1]
@@ -413,13 +430,13 @@ function _ensemble_uncertainty(
 
     q = (Float64(quantiles[1]), Float64(quantiles[2]))
     means, stds, lowers, uppers, samples = _aggregate(preds, model.targets, q)
-    params = _aggregate_params(param_preds, model.global_param_names)
+    params = _aggregate_params(param_preds, _global_param_names(model))
     meta = (; seeds = seeds, bootstrap = use_bootstrap)
     return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, params, n_models, q, meta)
 end
 
 function estimate_uncertainty(
-        method::DeepEnsemble, model::HybridModel, data;
+        method::DeepEnsemble, model::UQModel, data;
         eval_data = data, quantiles::Tuple{<:Real, <:Real} = (0.025, 0.975),
         verbose::Bool = true, train_kwargs...,
     )
@@ -439,7 +456,7 @@ function estimate_uncertainty(
 end
 
 function estimate_uncertainty(
-        method::Bootstrap, model::HybridModel, data;
+        method::Bootstrap, model::UQModel, data;
         eval_data = data, quantiles::Tuple{<:Real, <:Real} = (0.025, 0.975),
         verbose::Bool = true, train_kwargs...,
     )
@@ -465,7 +482,7 @@ function estimate_uncertainty(
 
     q = (Float64(quantiles[1]), Float64(quantiles[2]))
     means, stds, lowers, uppers, samples = _aggregate(preds, model.targets, q)
-    params = _aggregate_params(param_preds, model.global_param_names)
+    params = _aggregate_params(param_preds, _global_param_names(model))
     meta = (; init_seed = method.seed, resample_seeds = resample_seeds, bootstrap = true)
     return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, params, method.n_models, q, meta)
 end
