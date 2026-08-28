@@ -93,6 +93,7 @@ lstm_param_names = Vector{Symbol}()
 # `constructHybridODE` is the ODE counterpart of `constructHybridModel`.
 # The only new arguments are `state` / `deriv` (which fields in the step output
 # are the ODE state and its derivative) and `hidden_dims` for the LSTM.
+# Include names from `state` in `predictors` to feed that state into the NN.
 
 hode = constructHybridODE(
     predictors,
@@ -105,7 +106,6 @@ hode = constructHybridODE(
     hidden_dims = 16,
     state = :C,
     deriv = :dC,
-    feedback = true,
     scale_nn_outputs = true,
 )
 
@@ -185,7 +185,7 @@ out_ode.val_obs_pred
 # (you should not list them there) and are predicted *before* the time loop.
 
 hode_static = constructHybridODE(
-    predictors,                         # LSTM inputs (unchanged)
+    [predictors; :C],                   # LSTM inputs; :C is ODE state (not a data column)
     forcing,                            # forcing (unchanged)
     target,                             # targets (unchanged)
     mOnePool_step,
@@ -195,7 +195,6 @@ hode_static = constructHybridODE(
     hidden_dims = 16,
     state = :C,
     deriv = :dC,
-    feedback = true,
     scale_nn_outputs = true,
     static_predictors = (; C = [:sw_pot, :dsw_pot]),  # static NN for C₀
     static_hidden_layers = (; C = [8, 8]),

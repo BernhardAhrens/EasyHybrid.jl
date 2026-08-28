@@ -17,7 +17,8 @@ like the initial ODE state.
 | Static NN params | independent feedforward NNs | once per window, before the loop | `C` (initial carbon pool) |
 
 Dynamic NNs receive `[predictors; static_features]` at each step.
-`feedback` is opt-in (`true` or a name list) and concatenates ODE state (or other carry).
+Put `state` names (or other process carry) in `predictors` to feed them into the NN;
+names not found in the data are taken from the ODE loop.
 `static_features` are precomputed (first timestep) and do not evolve.
 Static NNs receive the first timestep of their input features and produce
 a scalar per sample.  If the ODE `state_name` (e.g. `:C`) is among the
@@ -47,7 +48,6 @@ struct ODEHybridModel{LC, P, SNN, F, PM <: AbstractHybridModel} <: LuxCore.Abstr
     static_features::Vector{Symbol}
     lstm_predictors::NamedTuple
     lstm_param_names::NamedTuple
-    lstm_feedback::NamedTuple
     mechanistic_model::F
     parameters::PM
     predictors::Union{Vector{Symbol}, NamedTuple}
@@ -61,7 +61,6 @@ struct ODEHybridModel{LC, P, SNN, F, PM <: AbstractHybridModel} <: LuxCore.Abstr
     start_from_default::Bool
     state_names::Vector{Symbol}
     deriv_names::Vector{Symbol}
-    feedback_names::Vector{Symbol}
     n_state::Int
     config::NamedTuple
 end
@@ -79,7 +78,7 @@ observable outputs.
 # Example — LSTM only (all neural params are time-varying)
 ```julia
 model = constructHybridODE(
-    [:sw_pot, :dsw_pot],          # predictors (LSTM input)
+    [:sw_pot, :dsw_pot, :C],      # predictors (include :C to feed state into the LSTM)
     [:SW_IN, :TA],                # forcing
     [:NEE],                       # targets
     mOnePool_step,
@@ -88,14 +87,13 @@ model = constructHybridODE(
     [:Q10, :C];                   # global_param_names (C₀ trainable scalar)
     hidden_dims = 16,
     state = :C, deriv = :dC,
-    feedback = true,
 )
 ```
 
 # Example — LSTM + static NN for initial C
 ```julia
 model = constructHybridODE(
-    [:sw_pot, :dsw_pot],          # LSTM predictors
+    [:sw_pot, :dsw_pot, :C],      # LSTM predictors (include :C for state interaction)
     [:SW_IN, :TA],                # forcing
     [:NEE],                       # targets
     mOnePool_step,
@@ -104,7 +102,6 @@ model = constructHybridODE(
     [:Q10];                       # global_param_names
     hidden_dims = 16,
     state = :C, deriv = :dC,
-    feedback = true,
     static_predictors = (; C = [:soil_moisture, :clay_fraction]),
     static_hidden_layers = (; C = [8, 8]),
 )
@@ -121,9 +118,6 @@ model = constructHybridODE(
 - `deriv::Symbol = :dC`: name of the derivative in the step function output
 - `static_features::Vector{Symbol} = Symbol[]`: precomputed features (first timestep),
   concatenated to every dynamic NN
-- `feedback=nothing`: extra inputs to each dynamic NN besides predictors/`static_features`.
-  Off by default. `true` → all ODE states. `Symbol` / `Vector` / `NamedTuple` lists names;
-  omitted NNs get none.
 - `scale_nn_outputs::Bool = true`: apply sigmoid scaling to NN outputs
 - `start_from_default::Bool = true`: initialize global params at their default values
 - `static_predictors::NamedTuple = (;)`: per-param input features for static NNs.
@@ -146,7 +140,6 @@ function constructHybridODE(
         state::Union{Symbol, Vector{Symbol}} = :C,
         deriv::Union{Symbol, Vector{Symbol}} = :dC,
         static_features::Vector{Symbol} = Symbol[],
-        feedback = nothing,
         scale_nn_outputs::Bool = true,
         start_from_default::Bool = true,
         static_predictors::NamedTuple = (;),
@@ -166,8 +159,6 @@ function constructHybridODE(
         throw(ArgumentError("`state` and `deriv` must have the same length"))
     n_state = length(state_names) == 1 ? n_state : 1
 
-    lstm_feedback, feedback_names = _resolve_feedback(feedback, keys(lstm_predictors), state_names)
-
     all_names = pnames(parameters)
     all_lstm_param_names = unique(reduce(vcat, collect(values(lstm_pnames)); init = Symbol[]))
     static_nn_param_names = Symbol[k for k in keys(static_predictors)]
@@ -183,9 +174,8 @@ function constructHybridODE(
     for name in keys(lstm_predictors)
         n_out = length(lstm_pnames[name])
         n_out == 0 && continue
-        n_fb = _feedback_rows(lstm_feedback[name], state_names, n_state)
-        n_in = length(lstm_predictors[name]) + n_static + n_fb
-        n_in > 0 || throw(ArgumentError("NN :$name needs predictors, static_features, or feedback"))
+        n_in = _input_rows(lstm_predictors[name], state_names, n_state) + n_static
+        n_in > 0 || throw(ArgumentError("NN :$name needs predictors or static_features"))
         hd = hidden_dims isa NamedTuple ? hidden_dims[name] : hidden_dims
         if _is_recurrent(recurrent, name)
             lstm_cells = merge(lstm_cells, NamedTuple{(name,)}((LSTMCell(n_in => hd),)))
@@ -208,19 +198,19 @@ function constructHybridODE(
     end
 
     config = (;
-        hidden_dims, recurrent, n_state, state, deriv, static_features, feedback,
+        hidden_dims, recurrent, n_state, state, deriv, static_features,
         scale_nn_outputs, start_from_default, static_hidden_layers, static_activation, kwargs...,
     )
 
     return ODEHybridModel(
         lstm_cells, projs, static_NNs, static_predictors, static_features,
-        lstm_predictors, lstm_pnames, lstm_feedback,
+        lstm_predictors, lstm_pnames,
         mechanistic_model, parameters,
         predictors, forcing, targets,
         all_lstm_param_names, static_nn_param_names,
         global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default,
-        state_names, deriv_names, feedback_names, n_state, config
+        state_names, deriv_names, n_state, config
     )
 end
 
@@ -240,34 +230,11 @@ function _wrap_lstm_groups(predictors::Vector{Symbol}, lstm_param_names::Vector{
 end
 _wrap_lstm_groups(predictors::NamedTuple, lstm_param_names::NamedTuple) = predictors, lstm_param_names
 
-# Opt-in: nothing/false/[] → none. true → all states.
-# NamedTuple: listed NNs get those names; omitted NNs get none.
 _is_recurrent(recurrent::Bool, _) = recurrent
 _is_recurrent(recurrent::NamedTuple, name) = get(recurrent, name, true)
 
-function _resolve_feedback(feedback::Nothing, lstm_names, state_names)
-    return _resolve_feedback(Symbol[], lstm_names, state_names)
-end
-_resolve_feedback(feedback::Bool, lstm_names, state_names) =
-    feedback ? _resolve_feedback(state_names, lstm_names, state_names) :
-    _resolve_feedback(Symbol[], lstm_names, state_names)
-_resolve_feedback(feedback::Symbol, lstm_names, state_names) =
-    _resolve_feedback(Symbol[feedback], lstm_names, state_names)
-function _resolve_feedback(feedback::AbstractVector{Symbol}, lstm_names, state_names)
-    fb = collect(feedback)
-    fb_each = NamedTuple{Tuple(lstm_names)}(ntuple(_ -> copy(fb), length(lstm_names)))
-    return fb_each, unique(vcat(state_names, fb))
-end
-function _resolve_feedback(feedback::NamedTuple, lstm_names, state_names)
-    fb_each = NamedTuple{Tuple(lstm_names)}(
-        ntuple(i -> collect(get(feedback, lstm_names[i], Symbol[])), length(lstm_names))
-    )
-    extra = reduce(vcat, collect.(values(fb_each)); init = Symbol[])
-    return fb_each, unique(vcat(state_names, extra))
-end
-
-_feedback_rows(fb, state_names, n_state) =
-    sum(n -> (length(state_names) == 1 && n === state_names[1]) ? n_state : 1, fb; init = 0)
+_input_rows(preds, state_names, n_state) =
+    sum(n -> (length(state_names) == 1 && n === state_names[1]) ? n_state : 1, preds; init = 0)
 
 _nrow(m::ODEHybridModel, name) =
     (length(m.state_names) == 1 && name === m.state_names[1]) ? m.n_state : 1
@@ -337,8 +304,9 @@ end
 # Forward pass — explicit time loop (SpiralClassifier pattern)
 
 function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
-    T_len, B, ET = _ode_time_batch(ds_k, m)
-    pred_cache = map(preds -> isempty(preds) ? zeros(ET, 0, T_len, B) : toArray(ds_k, preds), m.lstm_predictors)
+    data_vars = _data_vars(ds_k)
+    T_len, B, ET = _ode_time_batch(ds_k, m, data_vars)
+    pred_cache = _pred_cache(ds_k, m, data_vars)
     stat = isempty(m.static_features) ? zeros(ET, 0, B) : toArray(ds_k, m.static_features)[:, 1, :]
 
     forc_3d = isempty(m.forcing) ? nothing : toArray(ds_k, m.forcing)
@@ -363,8 +331,9 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
 
     # ── initialize ODE state ──
     # Priority: static NN > global param > fixed param > zeros
+    carry_names = _carry_names(m, data_vars)
     phys_carry = (;)
-    for name in m.feedback_names
+    for name in carry_names
         nrow = _nrow(m, name)
         val = if name in m.static_nn_param_names
             static_kw[name]
@@ -429,10 +398,36 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
     return output, st_new
 end
 
-function _ode_time_batch(ds_k, m)
+function _data_vars(ds_k)
+    return Set{Symbol}(Symbol.(axiskeys(ds_k, 1)))
+end
+
+function _carry_names(m, data_vars)
+    extra = Symbol[]
     for preds in values(m.lstm_predictors)
-        isempty(preds) && continue
-        a = toArray(ds_k, preds)
+        for p in preds
+            (p in m.state_names || p ∉ data_vars) && push!(extra, p)
+        end
+    end
+    return unique(vcat(m.state_names, extra))
+end
+
+function _pred_cache(ds_k, m, data_vars)
+    cache = (;)
+    for preds in values(m.lstm_predictors)
+        for p in preds
+            (p in data_vars && p ∉ m.state_names && !haskey(cache, p)) || continue
+            cache = merge(cache, NamedTuple{(p,)}((toArray(ds_k, [p]),)))
+        end
+    end
+    return cache
+end
+
+function _ode_time_batch(ds_k, m, data_vars = _data_vars(ds_k))
+    for preds in values(m.lstm_predictors)
+        data_p = [p for p in preds if p in data_vars && p ∉ m.state_names]
+        isempty(data_p) && continue
+        a = toArray(ds_k, data_p)
         return size(a, 2), size(a, 3), eltype(a)
     end
     a = toArray(ds_k, isempty(m.static_features) ? m.forcing : m.static_features)
@@ -445,9 +440,15 @@ function _run_lstms(m, pred_cache, stat, t, phys_carry, lstm_carry, ps, st_cells
     new_st_cells = (;)
     new_st_projs = st_projs
     for name in keys(m.lstm_cells)
-        pred_t = pred_cache[name][:, t, :]
-        fb = m.lstm_feedback[name]
-        x = vcat(pred_t, stat, ntuple(i -> phys_carry[fb[i]], length(fb))...)
+        preds = m.lstm_predictors[name]
+        x = vcat(
+            ntuple(
+                i -> begin
+                    p = preds[i]
+                    haskey(phys_carry, p) ? phys_carry[p] : pred_cache[p][:, t, :]
+                end, length(preds)
+            )..., stat
+        )
         if haskey(m.projs, name)
             cell_in = lstm_carry isa NamedTuple && haskey(lstm_carry, name) ? (x, lstm_carry[name]) : x
             (h, c), st_c = Lux.apply(m.lstm_cells[name], cell_in, ps.lstm_cells[name], st_cells[name])
@@ -487,6 +488,6 @@ function _ode_inner_step(m, nn_kw, phys_carry, forc_3d, t, global_kw, fixed_kw, 
         Tuple(phys_carry[s] .+ result[d] for (s, d) in zip(m.state_names, m.deriv_names))
     )
     src = merge(phys_carry, nn_kw, result, new_states)
-    new_carry = (; zip(m.feedback_names, Tuple(src[n] for n in m.feedback_names))...)
+    new_carry = (; zip(keys(phys_carry), Tuple(src[n] for n in keys(phys_carry)))...)
     return result, new_carry
 end

@@ -10,7 +10,7 @@
 #   H2CM FC_Static (sm_max, alpha_Ei) → static_predictors
 #   H2CM 12-D static embedding      → static_features (precomputed, first timestep)
 #   H2CM spin-up                    → not yet; windows start from zero ICs
-# `:wue` omits `feedback` → non-interacting (no state in the NN input).
+# State / process carry is listed in each group's `predictors` (`:wue` has none).
 
 using EasyHybrid
 using DimensionalData
@@ -101,9 +101,9 @@ targets = [:ET, :gpp, :nee, :tws, :runoff]
 
 h2cm = constructHybridODE(
     (
-        water = [:rn, :prec],
-        cue = [:rn, :tair, :vpd, :CO2],
-        rb = [:rn, :prec],
+        water = [:rn, :prec, :rel_SM, :swe, :GW, :fAPAR],
+        cue = [:rn, :tair, :vpd, :CO2, :rel_SM, :fAPAR, :npp],
+        rb = [:rn, :prec, :npp, :fAPAR],
         wue = [:rn, :vpd],
     ),
     forcing,
@@ -122,11 +122,6 @@ h2cm = constructHybridODE(
     state = [:swe, :SM, :GW],
     deriv = [:dswe, :dSM, :dGW],
     static_features = static_cols,
-    feedback = (
-        water = [:rel_SM, :swe, :GW, :fAPAR],
-        cue = [:rel_SM, :fAPAR, :npp],
-        rb = [:npp, :fAPAR],
-    ),
     static_predictors = (;
         sm_max = static_cols,
         alpha_Ei = static_cols,
