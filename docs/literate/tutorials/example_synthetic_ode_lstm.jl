@@ -179,25 +179,22 @@ out_ode.val_obs_pred
 # from site/window features.  This is useful when the initial condition should
 # vary across sites or depend on auxiliary features like soil moisture.
 #
-# The `static_predictors` keyword tells `constructHybridODE` which parameters
-# get their own per-window NN, and which input columns those NNs see.  Parameters
-# listed in `static_predictors` are automatically removed from `global_param_names`
-# (you should not list them there) and are predicted *before* the time loop.
+# Give `C` its own predictor group. If those columns do not vary over time in a
+# window, the group is run once and its output is used as C₀.
 
 hode_static = constructHybridODE(
-    [predictors; :C],                   # LSTM inputs; :C is ODE state (not a data column)
-    forcing,                            # forcing (unchanged)
-    target,                             # targets (unchanged)
+    (rb = [predictors; :C], C = [:sw_pot, :dsw_pot]),
+    forcing,
+    target,
     mOnePool_step,
     parameters,
-    [:rb],                              # LSTM-predicted params
-    [:Q10];                             # global_param_names (C no longer here!)
+    (rb = [:rb], C = [:C]),
+    [:Q10];
     hidden_dims = 16,
+    recurrent = (C = false,),
     state = :C,
     deriv = :dC,
     scale_nn_outputs = true,
-    static_predictors = (; C = [:sw_pot, :dsw_pot]),  # static NN for C₀
-    static_hidden_layers = (; C = [8, 8]),
 )
 hode_static
 

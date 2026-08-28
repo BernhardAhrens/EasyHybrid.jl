@@ -85,7 +85,7 @@ function get_prediction_target_names(hm)
     targets = hm.targets
     predictors_forcing = Symbol[]
     for prop in propertynames(hm)
-        if occursin("predictors", string(prop)) || prop === :static_features
+        if occursin("predictors", string(prop))
             val = getproperty(hm, prop)
             if isa(val, AbstractVector)
                 append!(predictors_forcing, val)

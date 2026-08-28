@@ -7,8 +7,8 @@
 #   H2CM LSTM 2 (CUE, fAPAR)        → group :cue
 #   H2CM LSTM 3 (rb, alpha_Es)      → group :rb
 #   H2CM FC  (WUE, alpha_T)         → group :wue  (`recurrent=false`; H2CM uses a dense net)
-#   H2CM FC_Static (sm_max, alpha_Ei) → static_predictors
-#   H2CM 12-D static embedding      → static_features (precomputed, first timestep)
+#   H2CM FC_Static (sm_max, alpha_Ei) → groups with site-only predictors (auto-detected static)
+#   H2CM 12-D static embedding      → site columns in each group's predictors (repeated in time)
 #   H2CM spin-up                    → not yet; windows start from zero ICs
 # State / process carry is listed in each group's `predictors` (`:wue` has none).
 
@@ -101,10 +101,12 @@ targets = [:ET, :gpp, :nee, :tws, :runoff]
 
 h2cm = constructHybridODE(
     (
-        water = [:rn, :prec, :rel_SM, :swe, :GW, :fAPAR],
-        cue = [:rn, :tair, :vpd, :CO2, :rel_SM, :fAPAR, :npp],
-        rb = [:rn, :prec, :npp, :fAPAR],
-        wue = [:rn, :vpd],
+        water = [:rn, :prec, :rel_SM, :swe, :GW, :fAPAR, static_cols...],
+        cue = [:rn, :tair, :vpd, :CO2, :rel_SM, :fAPAR, :npp, static_cols...],
+        rb = [:rn, :prec, :npp, :fAPAR, static_cols...],
+        wue = [:rn, :vpd, static_cols...],
+        sm_max = static_cols,
+        alpha_Ei = static_cols,
     ),
     forcing,
     targets,
@@ -115,18 +117,14 @@ h2cm = constructHybridODE(
         cue = [:cue, :fAPAR],
         rb = [:rb, :alpha_Es],
         wue = [:wue, :alpha_T],
+        sm_max = [:sm_max],
+        alpha_Ei = [:alpha_Ei],
     ),
     [:Q10, :beta_snow, :beta_baseflow, :beta_co2];
     hidden_dims = 16,
-    recurrent = (wue = false,),
+    recurrent = (wue = false, sm_max = false, alpha_Ei = false),
     state = [:swe, :SM, :GW],
     deriv = [:dswe, :dSM, :dGW],
-    static_features = static_cols,
-    static_predictors = (;
-        sm_max = static_cols,
-        alpha_Ei = static_cols,
-    ),
-    static_hidden_layers = [8, 8],
     scale_nn_outputs = true,
 )
 
@@ -138,6 +136,10 @@ x = DimArray(
     (Dim{:variable}(vars), Dim{:time}(1:T), Dim{:batch_size}(1:B)),
 )
 x[variable = At(:tair)] .+= 280.0f0
+for c in static_cols
+    sl = x[variable = At(c)]
+    sl .= sl[1:1, :]
+end
 ps, st = Lux.setup(Random.default_rng(), h2cm)
 out, _ = h2cm(x, ps, st)
 out.ET
