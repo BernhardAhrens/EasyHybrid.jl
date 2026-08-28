@@ -24,7 +24,7 @@ Static NNs receive the first timestep of their input features and produce
 a scalar per sample.  If the ODE `state_name` (e.g. `:C`) is among the
 static NN params, its output is used as the initial condition C₀.
 
-`predictors` / `lstm_param_names` may be a `NamedTuple` of groups (several LSTMs);
+`predictors` / `neural_param_names` may be a `NamedTuple` of groups (several LSTMs);
 `state` / `deriv` may be a `Vector` of names.
 
 # Fields
@@ -36,7 +36,7 @@ static NN params, its output is used as the initial condition C₀.
 - `parameters`: `ParameterContainer` with bounds for scaling
 - `predictors`: LSTM input feature names
 - `forcing`, `targets`: same role as in `SingleNNHybridModel`
-- `lstm_param_names`: params predicted per-timestep by the LSTM
+- `neural_param_names`: params predicted per-timestep by the dynamic NN
 - `static_nn_param_names`: params predicted per-window by static NNs
 - `global_param_names`, `fixed_param_names`: non-neural params
 """
@@ -47,13 +47,13 @@ struct ODEHybridModel{LC, P, SNN, F, PM <: AbstractHybridModel} <: LuxCore.Abstr
     static_predictors::NamedTuple
     static_features::Vector{Symbol}
     lstm_predictors::NamedTuple
-    lstm_param_names::NamedTuple
+    neural_param_names::NamedTuple
     mechanistic_model::F
     parameters::PM
     predictors::Union{Vector{Symbol}, NamedTuple}
     forcing::Vector{Symbol}
     targets::Vector{Symbol}
-    all_lstm_param_names::Vector{Symbol}
+    all_neural_param_names::Vector{Symbol}
     static_nn_param_names::Vector{Symbol}
     global_param_names::Vector{Symbol}
     fixed_param_names::Vector{Symbol}
@@ -67,7 +67,7 @@ end
 
 """
     constructHybridODE(predictors, forcing, targets, mechanistic_model, parameters,
-                       lstm_param_names, global_param_names; kwargs...)
+                       neural_param_names, global_param_names; kwargs...)
 
 Construct an `ODEHybridModel` — the ODE counterpart of `constructHybridModel`.
 
@@ -83,7 +83,7 @@ model = constructHybridODE(
     [:NEE],                       # targets
     mOnePool_step,
     (rb = (3f0, 0f0, 13f0), Q10 = (2f0, 1f0, 4f0), C = (100f0, 10f0, 500f0)),
-    [:rb],                        # lstm_param_names
+    [:rb],                        # neural_param_names
     [:Q10, :C];                   # global_param_names (C₀ trainable scalar)
     hidden_dims = 16,
     state = :C, deriv = :dC,
@@ -98,7 +98,7 @@ model = constructHybridODE(
     [:NEE],                       # targets
     mOnePool_step,
     (rb = (3f0, 0f0, 13f0), Q10 = (2f0, 1f0, 4f0), C = (100f0, 10f0, 500f0)),
-    [:rb],                        # lstm_param_names
+    [:rb],                        # neural_param_names
     [:Q10];                       # global_param_names
     hidden_dims = 16,
     state = :C, deriv = :dC,
@@ -132,7 +132,7 @@ function constructHybridODE(
         targets::Vector{Symbol},
         mechanistic_model,
         parameters,
-        lstm_param_names,
+        neural_param_names,
         global_param_names::Vector{Symbol};
         hidden_dims::Union{Int, NamedTuple} = 16,
         recurrent::Union{Bool, NamedTuple} = true,
@@ -152,7 +152,7 @@ function constructHybridODE(
         parameters = build_parameters(parameters, mechanistic_model)
     end
 
-    lstm_predictors, lstm_pnames = _wrap_lstm_groups(predictors, lstm_param_names)
+    lstm_predictors, lstm_pnames = _wrap_lstm_groups(predictors, neural_param_names)
     state_names = state isa Symbol ? Symbol[state] : collect(state)
     deriv_names = deriv isa Symbol ? Symbol[deriv] : collect(deriv)
     length(state_names) == length(deriv_names) ||
@@ -160,9 +160,9 @@ function constructHybridODE(
     n_state = length(state_names) == 1 ? n_state : 1
 
     all_names = pnames(parameters)
-    all_lstm_param_names = unique(reduce(vcat, collect(values(lstm_pnames)); init = Symbol[]))
+    all_neural_param_names = unique(reduce(vcat, collect(values(lstm_pnames)); init = Symbol[]))
     static_nn_param_names = Symbol[k for k in keys(static_predictors)]
-    all_neural = unique([all_lstm_param_names..., static_nn_param_names...])
+    all_neural = unique([all_neural_param_names..., static_nn_param_names...])
     @assert all(n in all_names for n in all_neural) "all neural param names must be in parameters"
 
     fixed_param_names = [n for n in all_names if !(n in [all_neural..., global_param_names...])]
@@ -207,7 +207,7 @@ function constructHybridODE(
         lstm_predictors, lstm_pnames,
         mechanistic_model, parameters,
         predictors, forcing, targets,
-        all_lstm_param_names, static_nn_param_names,
+        all_neural_param_names, static_nn_param_names,
         global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default,
         state_names, deriv_names, n_state, config
@@ -217,18 +217,18 @@ end
 # Keyword-argument overload
 function constructHybridODE(;
         predictors, forcing, targets, mechanistic_model, parameters,
-        lstm_param_names, global_param_names, kwargs...
+        neural_param_names, global_param_names, kwargs...
     )
     return constructHybridODE(
         predictors, forcing, targets, mechanistic_model, parameters,
-        lstm_param_names, global_param_names; kwargs...
+        neural_param_names, global_param_names; kwargs...
     )
 end
 
-function _wrap_lstm_groups(predictors::Vector{Symbol}, lstm_param_names::Vector{Symbol})
-    return (; lstm = predictors), (; lstm = lstm_param_names)
+function _wrap_lstm_groups(predictors::Vector{Symbol}, neural_param_names::Vector{Symbol})
+    return (; lstm = predictors), (; lstm = neural_param_names)
 end
-_wrap_lstm_groups(predictors::NamedTuple, lstm_param_names::NamedTuple) = predictors, lstm_param_names
+_wrap_lstm_groups(predictors::NamedTuple, neural_param_names::NamedTuple) = predictors, neural_param_names
 
 _is_recurrent(recurrent::Bool, _) = recurrent
 _is_recurrent(recurrent::NamedTuple, name) = get(recurrent, name, true)
@@ -375,7 +375,7 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
     # Accumulate *all* mechanistic outputs (not just targets) via vcat (mutation-free for AD)
     result_names = collect(keys(result_1))
     result_trajs = NamedTuple{Tuple(result_names)}(Tuple(result_1[k] for k in result_names))
-    nn_trajs = NamedTuple{Tuple(m.all_lstm_param_names)}(Tuple(nn_kw_1[n] for n in m.all_lstm_param_names))
+    nn_trajs = NamedTuple{Tuple(m.all_neural_param_names)}(Tuple(nn_kw_1[n] for n in m.all_neural_param_names))
 
     # ── remaining timesteps ──
     for t in 2:T_len
@@ -388,8 +388,8 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
         result_trajs = NamedTuple{Tuple(result_names)}(
             Tuple(vcat(result_trajs[k], result_t[k]) for k in result_names)
         )
-        nn_trajs = NamedTuple{Tuple(m.all_lstm_param_names)}(
-            Tuple(vcat(nn_trajs[n], nn_kw_t[n]) for n in m.all_lstm_param_names)
+        nn_trajs = NamedTuple{Tuple(m.all_neural_param_names)}(
+            Tuple(vcat(nn_trajs[n], nn_kw_t[n]) for n in m.all_neural_param_names)
         )
     end
 
@@ -454,7 +454,7 @@ function _run_lstms(m, pred_cache, stat, t, phys_carry, lstm_carry, ps, st_cells
         else
             raw, st_c = Lux.apply(m.lstm_cells[name], x, ps.lstm_cells[name], st_cells[name])
         end
-        pnames = m.lstm_param_names[name]
+        pnames = m.neural_param_names[name]
         n_nn = length(pnames)
         nn_scaled = if m.scale_nn_outputs
             ntuple(i -> scale_single_param(pnames[i], raw[i:i, :], m.parameters), n_nn)

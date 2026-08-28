@@ -86,7 +86,7 @@ predictors = [:sw_pot, :dsw_pot]
 target = [:reco]
 
 global_param_names = [:Q10]
-lstm_param_names = Vector{Symbol}()
+neural_param_names = Vector{Symbol}()
 
 # ## 6. Construct the ODE-LSTM Hybrid Model
 #
@@ -101,7 +101,7 @@ hode = constructHybridODE(
     target,
     mOnePool_step,
     parameters,
-    lstm_param_names,
+    neural_param_names,
     global_param_names;
     hidden_dims = 16,
     state = :C,
