@@ -304,12 +304,14 @@ end
 # Forward pass — explicit time loop (SpiralClassifier pattern)
 
 function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
-    data_vars = _data_vars(ds_k)
-    T_len, B, ET = _ode_time_batch(ds_k, m, data_vars)
-    pred_cache = _pred_cache(ds_k, m, data_vars)
-    stat = isempty(m.static_features) ? zeros(ET, 0, B) : toArray(ds_k, m.static_features)[:, 1, :]
-
-    forc_3d = isempty(m.forcing) ? nothing : toArray(ds_k, m.forcing)
+    data_vars, T_len, B, ET, pred_cache, stat, forc_3d, carry_names = ChainRulesCore.ignore_derivatives() do
+        dv = _data_vars(ds_k)
+        T_len, B, ET = _ode_time_batch(ds_k, m, dv)
+        pred_cache = _pred_cache(ds_k, m, dv)
+        stat = isempty(m.static_features) ? zeros(ET, 0, B) : toArray(ds_k, m.static_features)[:, 1, :]
+        forc_3d = isempty(m.forcing) ? nothing : toArray(ds_k, m.forcing)
+        return dv, T_len, B, ET, pred_cache, stat, forc_3d, _carry_names(m, dv)
+    end
 
     # ── static NNs: run once per window, before the time loop ──
     static_kw = (;)
@@ -331,7 +333,6 @@ function (m::ODEHybridModel)(ds_k::Union{KeyedArray, AbstractDimArray}, ps, st)
 
     # ── initialize ODE state ──
     # Priority: static NN > global param > fixed param > zeros
-    carry_names = _carry_names(m, data_vars)
     phys_carry = (;)
     for name in carry_names
         nrow = _nrow(m, name)
@@ -403,12 +404,7 @@ function _data_vars(ds_k)
 end
 
 function _carry_names(m, data_vars)
-    extra = Symbol[]
-    for preds in values(m.lstm_predictors)
-        for p in preds
-            (p in m.state_names || p ∉ data_vars) && push!(extra, p)
-        end
-    end
+    extra = [p for preds in values(m.lstm_predictors) for p in preds if p in m.state_names || p ∉ data_vars]
     return unique(vcat(m.state_names, extra))
 end
 
