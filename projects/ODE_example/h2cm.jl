@@ -137,8 +137,8 @@ x = DimArray(
 )
 x[variable = At(:tair)] .+= 280.0f0
 for c in static_cols
-    sl = x[variable = At(c)]
-    sl .= sl[1:1, :]
+    i = findfirst(==(c), vars)
+    parent(x)[i, :, :] .= parent(x)[i, 1:1, :]
 end
 ps, st = Lux.setup(Random.default_rng(), h2cm)
 out, _ = h2cm(x, ps, st)
