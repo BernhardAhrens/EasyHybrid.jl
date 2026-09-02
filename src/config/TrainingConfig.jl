@@ -22,8 +22,9 @@ $(TYPEDFIELDS)
     `Optimisers.jl`) three forms are accepted:
 
     1. A single `Optimisers.AbstractRule` (default), applied to the whole
-       parameter tree, e.g. `Adam(0.01)`. `ps` is wrapped in a
-       `ComponentArray`.
+       parameter tree, e.g. `Adam(0.01)`. `ps` stays the nested `NamedTuple`
+       returned by `LuxCore.setup`, and is wrapped in a `ComponentArray` only
+       when `autodiff_backend` requires a flat array (`AutoForwardDiff`).
     2. A `NamedTuple` of rules — one per top-level branch of the parameter
        tree — e.g. for an `RbQ10` hybrid model:
 
