@@ -28,7 +28,7 @@ It combines predictive neural networks (`NNs`) with a `mechanistic_model` to for
 
 $(TYPEDFIELDS)
 """
-struct HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
+struct HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
     "Neural network(s) used to predict parameters. Can be a single `Chain` or a `NamedTuple` of `Chain`s."
     NNs::T
 
@@ -45,7 +45,7 @@ struct HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG} <: LuxCore.AbstractLuxConta
     mechanistic_model::MM
 
     "Base parameters of the model (encapsulated in a `ParameterContainer`)."
-    parameters::ParameterContainer
+    parameters::PC
 
     "Names of the parameters predicted by the neural network(s)."
     neural_param_names::Vector{Symbol}
@@ -87,6 +87,10 @@ end
 # - `EX`: parameter names the mechanistic model does not consume, surfaced at the
 #         top level of the output (e.g. loss-only parameters).
 # - `TG`: target names, used to keep the training-loss assembly type-stable.
+# - `PC`: concrete `ParameterContainer` type, so `values` (the bounds NamedTuple)
+#         is visible to the compiler and parameter scaling stays type-stable.
+# - `SN`: `scale_nn_outputs` as a type-domain `Bool`, so the scale/no-scale
+#         branch of `_run_nn` is resolved at compile time (no Union).
 function HybridModel(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
@@ -103,7 +107,7 @@ function HybridModel(
     EX = accepted === nothing ? () : Tuple(k for k in param_names if !(k in accepted))
     TG = Tuple(targets)
 
-    return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, KW, EX, TG}(
+    return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, KW, EX, TG, typeof(parameters), scale_nn_outputs}(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default, config,
@@ -397,6 +401,8 @@ Execute the forward pass for a multi-neural network architecture.
 Applies each sub-network to its specific predictors, and applies scaling to the outputs if required.
 Returns scaled parameter values, updated states, and raw network outputs.
 """
+@inline _scale_nn_outputs(::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN}) where {T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN} = SN
+
 function _run_nn(m::HybridModel{<:Any, <:NamedTuple, <:Any, NP}, ds_k::Tuple, ps, st) where {NP}
     nn_names = keys(m.NNs)
     applied = map(nn_names) do nn_name
@@ -407,7 +413,7 @@ function _run_nn(m::HybridModel{<:Any, <:NamedTuple, <:Any, NP}, ds_k::Tuple, ps
 
     scaled_vals = map(nn_names, NP) do nn_name, param_name
         val = eachslice(nn_outputs[nn_name]; dims = 1)[1]
-        return m.scale_nn_outputs ? scale_single_param(param_name, val, m.parameters) : val
+        return _scale_nn_outputs(m) ? scale_single_param(Val(param_name), val, m.parameters) : val
     end
     scaled_nn_params = NamedTuple{NP}(scaled_vals)
 
@@ -426,8 +432,8 @@ function _run_nn(m::HybridModel{<:Any, <:Vector, <:Any, NP}, ds_k::Tuple, ps, st
         nn_out, st_nn = LuxCore.apply(m.NNs, ds_k[1], ps.ps, st.st_nn)
         slices = eachslice(nn_out, dims = 1)
         nn_cols = ntuple(i -> slices[i], Val(length(NP)))
-        if m.scale_nn_outputs
-            scaled_nn_vals = map((name, col) -> scale_single_param(name, col, m.parameters), NP, nn_cols)
+        if _scale_nn_outputs(m)
+            scaled_nn_vals = map((name, col) -> scale_single_param(Val(name), col, m.parameters), NP, nn_cols)
         else
             scaled_nn_vals = nn_cols
         end
@@ -451,7 +457,7 @@ function (m::HybridModel{T, P, MM, NP, GP, FP, KW, EX})(ds_k::Tuple, ps, st) whe
 
     # 1) Scale global parameters. Keys come from the `GP` type parameter, so the
     #    resulting `NamedTuple` is concrete (type-stable).
-    global_params = NamedTuple{GP}(map(g -> scale_single_param(g, ps[g], parameters), GP))
+    global_params = NamedTuple{GP}(map(g -> scale_single_param(Val(g), ps[g], parameters), GP))
 
     # 2) Run neural network(s)
     scaled_nn_params, st_new_nns, out_extra = _run_nn(m, ds_k, ps, st)

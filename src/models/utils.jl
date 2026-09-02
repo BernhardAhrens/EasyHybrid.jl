@@ -30,12 +30,20 @@ pnames(p::ParameterContainer) = keys(p.table.axes[1])
     scale_single_param(name, raw_val, parameters)
 
 Scale a single parameter using the sigmoid scaling function.
+
+The `Val{name}` method reads bounds via `getfield` on the concrete `values`
+NamedTuple (type-stable on the training hot path). The `Symbol` method is
+kept for the public / test API and delegates to `Val`.
 """
-function scale_single_param(name, raw_val, hm::ParameterContainer)
-    ℓ = lower(hm)[name]
-    u = upper(hm)[name]
+function scale_single_param(::Val{N}, raw_val, hm::ParameterContainer) where {N}
+    bounds = getfield(hm.values, N)          # (default, lower, upper)
+    ℓ = bounds[2]
+    u = bounds[3]
     return ℓ .+ (u .- ℓ) .* sigmoid.(raw_val)
 end
+
+scale_single_param(name::Symbol, raw_val, hm::ParameterContainer) =
+    scale_single_param(Val(name), raw_val, hm)
 
 inv_sigmoid(y) = log.(y ./ (1 .- y))
 
@@ -44,8 +52,11 @@ inv_sigmoid(y) = log.(y ./ (1 .- y))
 
 Scale a single parameter using the minmax scaling function.
 """
-function scale_single_param_minmax(name, hm::ParameterContainer)
-    ℓ = lower(hm)[name]
-    u = upper(hm)[name]
-    return inv_sigmoid.((default(hm)[name] .- ℓ) ./ (u .- ℓ))
+function scale_single_param_minmax(::Val{N}, hm::ParameterContainer) where {N}
+    bounds = getfield(hm.values, N)
+    ℓ, default_val, u = bounds[2], bounds[1], bounds[3]
+    return inv_sigmoid.((default_val .- ℓ) ./ (u .- ℓ))
 end
+
+scale_single_param_minmax(name::Symbol, hm::ParameterContainer) =
+    scale_single_param_minmax(Val(name), hm)
