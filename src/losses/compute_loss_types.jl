@@ -3,9 +3,10 @@ export loss_types, training_loss, extra_loss
 
 abstract type LossSpec end
 
-struct SymbolicLoss <: LossSpec
+struct SymbolicLoss{S} <: LossSpec
     name::Symbol
 end
+SymbolicLoss(s::Symbol) = SymbolicLoss{s}(s)
 
 struct FunctionLoss <: LossSpec
     f::Function
@@ -21,8 +22,8 @@ ParameterizedLoss(f::Function) = ParameterizedLoss(f, (), NamedTuple())
 ParameterizedLoss(f::Function, args::Tuple) = ParameterizedLoss(f, args, NamedTuple())
 ParameterizedLoss(f::Function, kwargs::NamedTuple) = ParameterizedLoss(f, (), kwargs)
 
-struct ExtraLoss <: LossSpec
-    f::Union{Function, Nothing}
+struct ExtraLoss{F} <: LossSpec
+    f::F
 end
 
 """
@@ -105,10 +106,10 @@ logging = LoggingLoss(
 )
 ```
 """
-struct LoggingLoss{L <: Union{LossSpec, PerTarget}, T <: Function}
+struct LoggingLoss{L <: Union{LossSpec, PerTarget}, E <: LossSpec, T <: Function}
     loss_types::Vector{LossSpec}
     training_loss::L
-    extra_loss::LossSpec
+    extra_loss::E
     agg::T
     train_mode::Bool
 end
@@ -125,11 +126,11 @@ function LoggingLoss(;
     tl = _to_loss_spec(training_loss)
     el = _to_extra_loss_spec(extra_loss)
 
-    return LoggingLoss{typeof(tl), F}(lt, tl, el, agg, train_mode)
+    return LoggingLoss{typeof(tl), typeof(el), F}(lt, tl, el, agg, train_mode)
 end
 
 
-_to_loss_spec(s::Symbol) = SymbolicLoss(s)
+_to_loss_spec(s::Symbol) = SymbolicLoss{s}(s)
 _to_loss_spec(f::Function) = _accepts_params(f) ? ParamLoss(f) : FunctionLoss(f)
 _to_loss_spec(ls::LossSpec) = ls
 
@@ -174,3 +175,12 @@ loss_spec(pt::PerTarget) = PerTarget(map(loss_spec, pt.losses))
 loss_types(logging::LoggingLoss) = map(loss_spec, logging.loss_types)
 training_loss(logging::LoggingLoss) = loss_spec(logging.training_loss)
 extra_loss(logging::LoggingLoss) = loss_spec(logging.extra_loss)
+
+# Like `loss_spec`, but for a `SymbolicLoss` it returns `Val(name)` so the loss
+# symbol is a compile-time constant on the training hot path. This turns the
+# per-target `loss_fn(..., Val(name))` call into a static dispatch (instead of a
+# `Val(runtime_symbol)` dynamic one), which is what lets Zygote infer the loss
+# value and build a fast pullback. Non-symbolic specs pass through unchanged.
+_static_loss_spec(ls::SymbolicLoss{S}) where {S} = Val(S)
+_static_loss_spec(ls::LossSpec) = loss_spec(ls)
+_static_loss_spec(pt::PerTarget) = loss_spec(pt)

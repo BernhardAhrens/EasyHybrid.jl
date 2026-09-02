@@ -23,35 +23,53 @@ function compute_loss(
     )
 
     targets = HM.targets
-    ext_loss = extra_loss(logging)
     if logging.train_mode
         ŷ, st = HM((x, forcings), ps, st)
         # Full-context losses (auto-detected `f(ŷ, y, y_nan, ps, targets, parameters)`)
         # get the predictions, targets, masks, raw params `ps`, target names and the
         # model parameters (`ŷ.parameters`), and do their own masking/aggregation;
         # everything else uses the per-target machinery.
-        loss_value = logging.training_loss isa ParamLoss ?
+        base_loss = logging.training_loss isa ParamLoss ?
             logging.training_loss.f(ŷ, y_t, y_nan, ps, targets, get(ŷ, :parameters, (;))) :
-            _compute_loss(ŷ, y_t, y_nan, targets, training_loss(logging), logging.agg)
-        # Add extra_loss if provided
-        if ext_loss !== nothing
-            extra_loss_value = ext_loss(ŷ, ps)
-            loss_value = logging.agg([loss_value, extra_loss_value...])
-        end
+            _train_loss(HM, ŷ, y_t, y_nan, _static_loss_spec(logging.training_loss), logging.agg)
+        # Add extra_loss if provided (dispatched on the extra-loss type so the
+        # common "no extra loss" case stays type-stable, keeping `loss_value`
+        # concrete and Zygote's pullback fast).
+        loss_value = _add_extra_train_loss(base_loss, logging.extra_loss, ŷ, ps, logging.agg)
         stats = NamedTuple()
     else
         ŷ, _ = HM((x, forcings), ps, LuxCore.testmode(st))
-        loss_value = _compute_loss(ŷ, y_t, y_nan, targets, loss_types(logging), logging.agg)
-        # Add extra_loss entries if provided
-        if ext_loss !== nothing
-            extra_loss_values = ext_loss(ŷ, ps)
-            agg_extra_loss_value = logging.agg(extra_loss_values)
-            loss_value = (; loss_value..., extra_loss = (; extra_loss_values..., Symbol(logging.agg) => agg_extra_loss_value))
-        end
+        base_loss = _compute_loss(ŷ, y_t, y_nan, targets, loss_types(logging), logging.agg)
+        loss_value = _add_extra_eval_loss(base_loss, logging.extra_loss, ŷ, ps, logging.agg)
         stats = (; ŷ...)
     end
     return loss_value, st, stats
 end
+
+# Extra-loss application, dispatched on the concrete `ExtraLoss` type. The
+# `Nothing` methods are no-ops that leave `loss_value` untouched (and concretely
+# typed); the `Function` methods add the user's extra loss exactly as before.
+_add_extra_train_loss(loss_value, ::ExtraLoss{Nothing}, ŷ, ps, agg) = loss_value
+function _add_extra_train_loss(loss_value, el::ExtraLoss, ŷ, ps, agg)
+    extra_loss_value = el.f(ŷ, ps)
+    return agg([loss_value, extra_loss_value...])
+end
+
+_add_extra_eval_loss(loss_value, ::ExtraLoss{Nothing}, ŷ, ps, agg) = loss_value
+function _add_extra_eval_loss(loss_value, el::ExtraLoss, ŷ, ps, agg)
+    extra_loss_values = el.f(ŷ, ps)
+    agg_extra_loss_value = agg(extra_loss_values)
+    return (; loss_value..., extra_loss = (; extra_loss_values..., Symbol(agg) => agg_extra_loss_value))
+end
+
+# Aggregate the training loss. For a `HybridModel` the target names are carried in
+# the type domain (`TG`), so the assembly is type-stable (concrete tuple of losses)
+# and Zygote builds a fast, unboxed pullback. Other model types fall back to the
+# generic vector-based path, preserving their existing behavior.
+function _train_loss(HM::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG}, ŷ, y, y_nan, loss_spec, agg) where {T, P, MM, NP, GP, FP, KW, EX, TG}
+    return agg(_assemble_loss(ŷ, y, y_nan, TG, loss_spec))
+end
+_train_loss(HM, ŷ, y, y_nan, loss_spec, agg) = _compute_loss(ŷ, y, y_nan, HM.targets, loss_spec, agg)
 
 function _compute_loss(ŷ, y, y_nan, targets, loss_spec, agg::Function)
     losses = assemble_loss(ŷ, y, y_nan, targets, loss_spec)
@@ -118,18 +136,30 @@ end
 _get_target_ŷ(ŷ, y_t, target) =
     ŷ[target]
 
-function assemble_loss(ŷ, y, y_nan, targets, loss_spec)
-    return [
-        begin
-                y_t = _get_target_y(y, target)
-                ŷ_t = _get_target_ŷ(ŷ, y_t, target)
-                y_nan_t = _get_target_y(y_nan, target)
-                _apply_loss(ŷ_t, y_t, y_nan_t, loss_spec)
-                # _apply_loss(ŷ_t, y_t, _get_target_nan(y_nan, target), loss_spec)
-            end
-            for target in targets
-    ]
+# Per-target loss for the standard (non-`PerTarget`) specs. Shared by the generic
+# vector-based `assemble_loss` and the type-stable `_assemble_loss` fast path so
+# both compute exactly the same value.
+function _target_loss(ŷ, y, y_nan, target, loss_spec)
+    y_t = _get_target_y(y, target)
+    ŷ_t = _get_target_ŷ(ŷ, y_t, target)
+    y_nan_t = _get_target_y(y_nan, target)
+    return _apply_loss(ŷ_t, y_t, y_nan_t, loss_spec)
 end
+
+function assemble_loss(ŷ, y, y_nan, targets, loss_spec)
+    return [_target_loss(ŷ, y, y_nan, target, loss_spec) for target in targets]
+end
+
+# Type-stable loss assembly: `targets` is a compile-time tuple, so `map` returns a
+# concrete tuple (no `Vector{Any}` and no runtime-`Symbol` NamedTuple indexing).
+# Used on the training hot path when the target names are known from the model
+# type (see `_train_loss`).
+_assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec) =
+    map(target -> _target_loss(ŷ, y, y_nan, target, loss_spec), targets)
+
+# `PerTarget` needs the target↔loss pairing of the generic path; fall back to it.
+_assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec::PerTarget) =
+    assemble_loss(ŷ, y, y_nan, collect(targets), loss_spec)
 
 function assemble_loss(ŷ, y, y_nan, targets, loss_spec::PerTarget)
     @assert length(targets) == length(loss_spec.losses) "Length of targets and PerTarget losses tuple must match"
@@ -152,6 +182,12 @@ end
 
 function _apply_loss(ŷ, y, y_nan, loss_spec::Symbol)
     return loss_fn(ŷ, y, y_nan, Val(loss_spec))
+end
+
+# Loss symbol already lifted to a `Val` (compile-time) via `_static_loss_spec`,
+# giving a static `loss_fn` dispatch on the training hot path.
+function _apply_loss(ŷ, y, y_nan, loss_spec::Val)
+    return loss_fn(ŷ, y, y_nan, loss_spec)
 end
 
 function _apply_loss(ŷ, y, y_nan, loss_spec::Function)

@@ -28,7 +28,7 @@ It combines predictive neural networks (`NNs`) with a `mechanistic_model` to for
 
 $(TYPEDFIELDS)
 """
-struct HybridModel{T, P, MM, NP, GP, FP, KW, EX} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
+struct HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
     "Neural network(s) used to predict parameters. Can be a single `Chain` or a `NamedTuple` of `Chain`s."
     NNs::T
 
@@ -86,6 +86,7 @@ end
 #         `kwargs...` (forward everything).
 # - `EX`: parameter names the mechanistic model does not consume, surfaced at the
 #         top level of the output (e.g. loss-only parameters).
+# - `TG`: target names, used to keep the training-loss assembly type-stable.
 function HybridModel(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
@@ -100,8 +101,9 @@ function HybridModel(
     KW = accepted === nothing ? nothing : accepted
     param_names = _merge_names(NP, GP, FP)
     EX = accepted === nothing ? () : Tuple(k for k in param_names if !(k in accepted))
+    TG = Tuple(targets)
 
-    return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, KW, EX}(
+    return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, KW, EX, TG}(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default, config,
