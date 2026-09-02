@@ -32,15 +32,17 @@ function compute_loss(
         logging::LoggingLoss
     )
 
-    targets = HM.targets
     if logging.train_mode
         ŷ, st = HM((x, forcings), ps, st)
         # Full-context losses (auto-detected `f(ŷ, y, y_nan, ps, targets, parameters)`)
         # get the predictions, targets, masks, raw params `ps`, target names and the
         # model parameters (`ŷ.parameters`), and do their own masking/aggregation;
         # everything else uses the per-target machinery.
+        # `HM.targets` is read inside the branches that need it: on the training hot
+        # path the per-target machinery takes the names from the model type instead,
+        # and reading the field would make the AD backend trace the model struct.
         base_loss = logging.training_loss isa ParamLoss ?
-            logging.training_loss.f(ŷ, y_t, y_nan, ps, targets, get(ŷ, :parameters, (;))) :
+            logging.training_loss.f(ŷ, y_t, y_nan, ps, HM.targets, get(ŷ, :parameters, (;))) :
             _train_loss(HM, ŷ, y_t, y_nan, _static_loss_spec(logging.training_loss), logging.agg)
         # Add extra_loss if provided (dispatched on the extra-loss type so the
         # common "no extra loss" case stays type-stable, keeping `loss_value`
@@ -49,7 +51,7 @@ function compute_loss(
         stats = NamedTuple()
     else
         ŷ, _ = HM((x, forcings), ps, LuxCore.testmode(st))
-        base_loss = _compute_loss(ŷ, y_t, y_nan, targets, loss_types(logging), logging.agg)
+        base_loss = _compute_loss(ŷ, y_t, y_nan, HM.targets, loss_types(logging), logging.agg)
         loss_value = _add_extra_eval_loss(base_loss, logging.extra_loss, ŷ, ps, logging.agg)
         stats = (; ŷ...)
     end
