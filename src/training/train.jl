@@ -42,6 +42,27 @@ checked again per-leaf when [`build_opt_state`](@ref) walks the spec.
 is_per_branch_opt(opt) = opt isa NamedTuple
 
 """
+    requires_array_params(backend) -> Bool
+
+Return `true` when the automatic-differentiation `backend` needs `ps` to be a
+single `AbstractArray` (e.g. a `ComponentArray`) instead of the nested
+`NamedTuple` that `LuxCore.setup` returns.
+
+Only `AutoForwardDiff` does: it differentiates the flat parameter vector
+directly and asserts `ts.parameters isa AbstractArray` (see
+`Lux/src/helpers/forwarddiff_training.jl`). The reverse-mode backends walk the
+parameter tree with `fmap` and accept either container.
+
+Keeping the `NamedTuple` where possible is worth doing: inside a
+`ComponentArray` the layer weights are reshaped views into one flat vector
+rather than plain `Matrix`es, which makes `LuxLib` fall back to a slower matmul.
+
+Add a method here for any further backend that needs a flat vector.
+"""
+requires_array_params(::Any) = false
+requires_array_params(::Lux.AutoForwardDiff) = true
+
+"""
     build_opt_state(opt, ps::NamedTuple; default_rule = Optimisers.Adam())
 
 Build the optimizer state tree consumed by `Lux.Training.TrainState` /

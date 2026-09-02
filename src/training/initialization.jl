@@ -44,9 +44,20 @@ function init_model_state(model, cfg::TrainConfig)
             model, ps, st, cfg.opt, opt_state, 0,
         )
     elseif is_optimisers_rule(cfg.opt)
-        ps = ps |> ComponentArray
+        # Convert only for backends that require a flat array (see
+        # `requires_array_params`). Otherwise keep the `NamedTuple` from
+        # `LuxCore.setup`, whose leaves are plain `Matrix`es: inside a
+        # `ComponentArray` they become reshaped views into one flat vector, and
+        # `LuxLib` then takes a slower matmul path on every forward pass.
+        #
+        # A `ComponentArray` arriving via `cfg.train_from` is left alone rather
+        # than unwrapped, because `NamedTuple(::ComponentArray)` hands back the
+        # views instead of materializing them, so it would keep the slow path
+        # while also reshaping the tree.
+        requires_array_params(cfg.autodiff_backend) && (ps = ps |> ComponentArray)
         Lux.Training.TrainState(model, ps, st, cfg.opt)
     else
+        # The `Optimization.jl` driver optimizes a flat vector.
         ps = ps |> ComponentArray
         nothing
     end
