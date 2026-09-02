@@ -51,7 +51,9 @@ function build_loss_fn(model, cfg::TrainConfig)
         extra_loss = cfg.extra_loss,
         agg = cfg.agg
     )
-    return (model, ps, st, (x, y)) -> compute_loss(model, ps, st, (x, y); logging = logging)
+    # `logging` is passed positionally: a keyword call would make Zygote trace
+    # Julia's keyword-splitting bookkeeping on every gradient evaluation.
+    return (model, ps, st, (x, y)) -> compute_loss(model, ps, st, (x, y), logging)
 end
 
 function evaluate_epoch(model, x_train, forcings_train, y_train, mask_train, x_val, forcings_val, y_val, mask_val, ps, st, epoch::Int, init::EpochSnapshot, cfg::TrainConfig)

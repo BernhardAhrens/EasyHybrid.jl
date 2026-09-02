@@ -1,7 +1,13 @@
 """
-    compute_loss(HM, x, (y_t, y_nan), ps, st, logging::LoggingLoss)
+    compute_loss(HM, ps, st, ((x, forcings), (y_t, y_nan)), logging::LoggingLoss)
+    compute_loss(HM, ps, st, ((x, forcings), (y_t, y_nan)); logging::LoggingLoss)
 
 Main loss function for hybrid models that handles both training and evaluation modes.
+
+`logging` can be given positionally or as a keyword argument; the two forms are
+equivalent. Prefer the positional form in code that gets differentiated: a
+keyword call makes Julia split the caller's NamedTuple at run time, and the AD
+backend then has to trace that bookkeeping on every gradient evaluation.
 
 # Arguments
 - `HM`: The hybrid model (AbstractLuxContainerLayer or specific model type)
@@ -17,8 +23,12 @@ Main loss function for hybrid models that handles both training and evaluation m
 - In evaluation mode (`logging.train_mode = false`):
   - `(loss_values, st, ŷ)`: NamedTuple of losses, state and predictions
 """
+function compute_loss(HM::LuxCore.AbstractLuxContainerLayer, ps, st, data; logging::LoggingLoss)
+    return compute_loss(HM, ps, st, data, logging)
+end
+
 function compute_loss(
-        HM::LuxCore.AbstractLuxContainerLayer, ps, st, ((x, forcings), (y_t, y_nan));
+        HM::LuxCore.AbstractLuxContainerLayer, ps, st, ((x, forcings), (y_t, y_nan)),
         logging::LoggingLoss
     )
 
