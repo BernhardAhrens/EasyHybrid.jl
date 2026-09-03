@@ -42,7 +42,7 @@ function compute_loss(
         ((x, forcings), (y_t, y_nan)),
         logging::LoggingLoss{SymbolicLoss{S}, ExtraLoss{Nothing}, A, true}
     ) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN, S, A}
-    y_pred, _, st_nn = _hybrid_vector(HM, (x, forcings), ps, st)
+    y_pred, st_nn = _hybrid_vector(HM, (x, forcings), ps, st, Val(false))
     return _compute_loss(y_pred, y_t, y_nan, TG, Val(S), logging.agg), _pack_st((; st_nn), st.fixed), NamedTuple()
 end
 

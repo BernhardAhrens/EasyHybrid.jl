@@ -404,8 +404,8 @@ ChainRulesCore.@non_differentiable _pack_st(::Any, ::Any)
 
 @generated function _hybrid_vector(
         m::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN},
-        ds_k::Tuple, ps, st
-    ) where {T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN}
+        ds_k::Tuple, ps, st, ::Val{need_params}
+    ) where {T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN, need_params}
     stmts = Expr[]
     all_names = (NP..., GP..., FP...)
 
@@ -434,7 +434,10 @@ ChainRulesCore.@non_differentiable _pack_st(::Any, ::Any)
     NP === () && KW === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(ds_k)))
     !SN && GP === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(m.parameters)))
 
-    push!(stmts, :(all_params = (; $(all_names...))))
+    pack_params = need_params || KW === nothing
+    if pack_params
+        push!(stmts, :(all_params = (; $(all_names...))))
+    end
 
     if KW === nothing
         push!(stmts, :(y_pred = m.mechanistic_model(; merge(ds_k[2], all_params)...)))
@@ -447,12 +450,16 @@ ChainRulesCore.@non_differentiable _pack_st(::Any, ::Any)
         push!(stmts, :(y_pred = m.mechanistic_model(; $(args...))))
     end
 
-    push!(stmts, :(return y_pred, all_params, st_nn))
+    if need_params
+        push!(stmts, :(return y_pred, all_params, st_nn))
+    else
+        push!(stmts, :(return y_pred, st_nn))
+    end
     return Expr(:block, stmts...)
 end
 
 function (m::HybridModel{T, <:Vector, MM, NP, GP, FP, KW, EX, TG, PC, SN})(ds_k::Tuple, ps, st) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN}
-    y_pred, all_params, st_nn = _hybrid_vector(m, ds_k, ps, st)
+    y_pred, all_params, st_nn = _hybrid_vector(m, ds_k, ps, st, Val(true))
     extra_params = _extra_params(Val{EX}(), all_params)
     out = _pack_out(y_pred, extra_params, all_params, NamedTuple())
     return out, _pack_st((; st_nn), st.fixed)
