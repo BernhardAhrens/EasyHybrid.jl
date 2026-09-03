@@ -415,7 +415,7 @@ function (m::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN})(ds_k::Tuple,
     return out, st_new
 end
 
-@generated function _nn_params(::Val{NP}, ::Val{true}, nn_out, parameters) where NP
+@generated function _nn_params(::Val{NP}, ::Val{true}, nn_out, parameters) where {NP}
     scaled = ntuple(length(NP)) do i
         :(scale_single_param(Val($(QuoteNode(NP[i]))), slices[$i], parameters))
     end
@@ -425,7 +425,7 @@ end
     end
 end
 
-@generated function _nn_params(::Val{NP}, ::Val{false}, nn_out, _) where NP
+@generated function _nn_params(::Val{NP}, ::Val{false}, nn_out, _) where {NP}
     vals = ntuple(i -> :(slices[$i]), length(NP))
     return quote
         slices = eachslice(nn_out, dims = 1)
@@ -453,7 +453,7 @@ end
     for n in FP
         push!(parts, Expr(:kw, n, :(getproperty(getproperty(st, :fixed), $(QuoteNode(n))))))
     end
-    return :( (; $(parts...) ) )
+    return :((; $(parts...)))
 end
 
 @generated function _pack_out(y_pred::NamedTuple{Y}, extra::NamedTuple{E}, all_params, out_extra::NamedTuple{O}) where {Y, E, O}
@@ -468,7 +468,7 @@ end
     for n in O
         push!(gets, Expr(:kw, n, :(getfield(out_extra, $(QuoteNode(n))))))
     end
-    return :( (; $(gets...) ) )
+    return :((; $(gets...)))
 end
 
 _call_mech(f, forcing, params, ::Val{nothing}) = f(; merge(forcing, params)...)
