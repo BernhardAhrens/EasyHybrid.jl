@@ -106,7 +106,7 @@ logging = LoggingLoss(
 )
 ```
 """
-struct LoggingLoss{L <: Union{LossSpec, PerTarget}, E <: LossSpec, T <: Function}
+struct LoggingLoss{L <: Union{LossSpec, PerTarget}, E <: LossSpec, T <: Function, TM}
     loss_types::Vector{LossSpec}
     training_loss::L
     extra_loss::E
@@ -126,7 +126,7 @@ function LoggingLoss(;
     tl = _to_loss_spec(training_loss)
     el = _to_extra_loss_spec(extra_loss)
 
-    return LoggingLoss{typeof(tl), typeof(el), F}(lt, tl, el, agg, train_mode)
+    return LoggingLoss{typeof(tl), typeof(el), F, train_mode}(lt, tl, el, agg, train_mode)
 end
 
 

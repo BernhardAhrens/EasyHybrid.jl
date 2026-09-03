@@ -420,7 +420,7 @@ Forward pass of the hybrid model.
 Evaluates the neural networks to predict parameters, merges them with scaled global parameters and fixed parameters, and executes the mechanistic model.
 Returns a tuple `(out, st_new)`.
 """
-function (m::HybridModel{T, P, MM, NP, GP, FP})(ds_k::Tuple, ps, st) where {T, P, MM, NP, GP, FP}
+function (m::HybridModel{T, P, MM, NP, GP, FP, KW})(ds_k::Tuple, ps, st) where {T, P, MM, NP, GP, FP, KW}
     parameters = m.parameters
 
     # 1) Scale global parameters (handle empty case)
@@ -435,15 +435,7 @@ function (m::HybridModel{T, P, MM, NP, GP, FP})(ds_k::Tuple, ps, st) where {T, P
     # 4) merge all parameters
     all_params = merge(scaled_nn_params, global_params, fixed_params)
 
-    # 5) unpack forcing data
-    forcing_data = ds_k[2]
-    all_kwargs = merge(forcing_data, all_params)
-
-    # 6) Apply mechanistic model. Only forward the kwargs it actually declares, so
-    #    "loss-only" parameters (e.g. a learned noise scale used only in the loss)
-    #    can be defined without the mechanistic model having to accept them. They
-    #    still live in `all_params` and are exposed below under `parameters`.
-    y_pred = m.mechanistic_model(; _mechanistic_kwargs(m, all_kwargs)...)
+    y_pred = _call_mech(m.mechanistic_model, ds_k[2], all_params, Val{KW}())
 
     # Parameters the mechanistic model does not consume (e.g. loss-only ones such as
     # a learned noise scale) are surfaced at the top level so they can be monitored
@@ -455,9 +447,19 @@ function (m::HybridModel{T, P, MM, NP, GP, FP})(ds_k::Tuple, ps, st) where {T, P
     return out, st_new
 end
 
-_mechanistic_kwargs(::HybridModel{T, P, MM, NP, GP, FP, nothing}, all_kwargs::NamedTuple) where {T, P, MM, NP, GP, FP} = all_kwargs
-_mechanistic_kwargs(::HybridModel{T, P, MM, NP, GP, FP, KW}, all_kwargs::NamedTuple) where {T, P, MM, NP, GP, FP, KW} =
-    NamedTuple{KW}(all_kwargs)
+_call_mech(f, forcing, params, ::Val{nothing}) = f(; merge(forcing, params)...)
+
+@generated function _call_mech(f, forcing::NamedTuple{FK}, params::NamedTuple{PK}, ::Val{KW}) where {FK, PK, KW}
+    args = Expr[]
+    for n in KW
+        src = n in PK ? :(getfield(params, $(QuoteNode(n)))) :
+            n in FK ? :(getfield(forcing, $(QuoteNode(n)))) :
+            error("mechanistic kwarg $(n) not found in forcing or parameters")
+        push!(args, Expr(:kw, n, src))
+    end
+    return :(f(; $(args...)))
+end
+
 _extra_params(::HybridModel{T, P, MM, NP, GP, FP, KW, EX}, all_params) where {T, P, MM, NP, GP, FP, KW, EX} =
     NamedTuple{EX}(all_params)
 
