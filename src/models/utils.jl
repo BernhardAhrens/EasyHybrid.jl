@@ -30,13 +30,9 @@ pnames(p::ParameterContainer) = keys(p.table.axes[1])
     scale_single_param(name, raw_val, parameters)
 
 Scale a single parameter using the sigmoid scaling function.
-
-The `Val{name}` method reads bounds via `getfield` on the concrete `values`
-NamedTuple (type-stable on the training hot path). The `Symbol` method is
-kept for the public / test API and delegates to `Val`.
 """
 function scale_single_param(::Val{N}, raw_val, hm::ParameterContainer) where {N}
-    bounds = getfield(hm.values, N)          # (default, lower, upper)
+    bounds = getfield(hm.values, N)
     ℓ = bounds[2]
     u = bounds[3]
     return ℓ .+ (u .- ℓ) .* sigmoid.(raw_val)

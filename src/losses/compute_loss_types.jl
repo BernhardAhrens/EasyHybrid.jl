@@ -176,11 +176,6 @@ loss_types(logging::LoggingLoss) = map(loss_spec, logging.loss_types)
 training_loss(logging::LoggingLoss) = loss_spec(logging.training_loss)
 extra_loss(logging::LoggingLoss) = loss_spec(logging.extra_loss)
 
-# Like `loss_spec`, but for a `SymbolicLoss` it returns `Val(name)` so the loss
-# symbol is a compile-time constant on the training hot path. This turns the
-# per-target `loss_fn(..., Val(name))` call into a static dispatch (instead of a
-# `Val(runtime_symbol)` dynamic one), which is what lets Zygote infer the loss
-# value and build a fast pullback. Non-symbolic specs pass through unchanged.
 _static_loss_spec(ls::SymbolicLoss{S}) where {S} = Val(S)
 _static_loss_spec(ls::LossSpec) = loss_spec(ls)
 _static_loss_spec(pt::PerTarget) = loss_spec(pt)

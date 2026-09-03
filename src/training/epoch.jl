@@ -51,8 +51,6 @@ function build_loss_fn(model, cfg::TrainConfig)
         extra_loss = cfg.extra_loss,
         agg = cfg.agg
     )
-    # `logging` is passed positionally: a keyword call would make Zygote trace
-    # Julia's keyword-splitting bookkeeping on every gradient evaluation.
     return (model, ps, st, (x, y)) -> compute_loss(model, ps, st, (x, y), logging)
 end
 
