@@ -66,24 +66,17 @@ struct HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN} <: LuxCore.Abstract
     config::NamedTuple
 end
 
-function _merge_names(groups...)
-    out = Symbol[]
-    for grp in groups, n in grp
-        n in out || push!(out, n)
-    end
-    return Tuple(out)
-end
-
 function HybridModel(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default, config,
     )
-    NP = Tuple(neural_param_names)
-    GP = Tuple(global_param_names)
-    FP = Tuple(fixed_param_names)
-    accepted = _accepted_kwarg_names(mechanistic_model, _merge_names(forcing, NP, GP, FP))
-    EX = accepted === nothing ? () : Tuple(k for k in _merge_names(NP, GP, FP) if !(k in accepted))
+    NP, GP, FP = Tuple(neural_param_names), Tuple(global_param_names), Tuple(fixed_param_names)
+    accepted = _accepted_kwarg_names(
+        mechanistic_model,
+        Tuple(unique([forcing; neural_param_names; global_param_names; fixed_param_names])),
+    )
+    EX = accepted === nothing ? () : Tuple(k for k in (NP..., GP..., FP...) if !(k in accepted))
     return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, accepted, EX, Tuple(targets), typeof(parameters), scale_nn_outputs}(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
@@ -371,8 +364,6 @@ function LuxCore.initialstates(rng::AbstractRNG, m::HybridModel)
     return merge(nn_states_nt, (; fixed = nt))
 end
 
-_scale_nn_outputs(::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN}) where {T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN} = SN
-
 """
     _run_nn(m::HybridModel{<:Any, <:NamedTuple}, ds_k::Tuple, ps, st)
 
@@ -380,7 +371,7 @@ Execute the forward pass for a multi-neural network architecture.
 Applies each sub-network to its specific predictors, and applies scaling to the outputs if required.
 Returns scaled parameter values, updated states, and raw network outputs.
 """
-function _run_nn(m::HybridModel{<:Any, <:NamedTuple, <:Any, NP}, ds_k::Tuple, ps, st) where {NP}
+function _run_nn(m::HybridModel{T, <:NamedTuple, MM, NP, GP, FP, KW, EX, TG, PC, SN}, ds_k::Tuple, ps, st) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN}
     nn_names = keys(m.NNs)
     applied = map(nn_names) do nn_name
         LuxCore.apply(m.NNs[nn_name], ds_k[1][nn_name], ps[nn_name], st[nn_name])
@@ -390,7 +381,7 @@ function _run_nn(m::HybridModel{<:Any, <:NamedTuple, <:Any, NP}, ds_k::Tuple, ps
 
     scaled_vals = map(nn_names, NP) do nn_name, param_name
         val = eachslice(nn_outputs[nn_name]; dims = 1)[1]
-        return _scale_nn_outputs(m) ? scale_single_param(Val(param_name), val, m.parameters) : val
+        return SN ? scale_single_param(Val(param_name), val, m.parameters) : val
     end
     scaled_nn_params = NamedTuple{NP}(scaled_vals)
 
@@ -404,17 +395,17 @@ Execute the forward pass for a single-neural network architecture.
 Applies the neural network to the given predictors, slices the output for multiple predicted parameters, and scales them if required.
 Returns scaled parameter values, updated states, and raw network outputs.
 """
-function _run_nn(m::HybridModel{<:Any, <:Vector, <:Any, NP}, ds_k::Tuple, ps, st) where {NP}
+function _run_nn(m::HybridModel{T, <:Vector, MM, NP, GP, FP, KW, EX, TG, PC, SN}, ds_k::Tuple, ps, st) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN}
     if !isempty(NP)
         nn_out, st_nn = LuxCore.apply(m.NNs, ds_k[1], ps.ps, st.st_nn)
         slices = eachslice(nn_out, dims = 1)
-        nn_cols = ntuple(i -> slices[i], Val(length(NP)))
-        if _scale_nn_outputs(m)
-            scaled_nn_vals = map((name, col) -> scale_single_param(Val(name), col, m.parameters), NP, nn_cols)
+        nn_params = NamedTuple{NP}(ntuple(i -> slices[i], Val(length(NP))))
+        if SN
+            scaled_nn_vals = map(name -> scale_single_param(Val(name), nn_params[name], m.parameters), NP)
+            scaled_nn_params = NamedTuple{NP}(scaled_nn_vals)
         else
-            scaled_nn_vals = nn_cols
+            scaled_nn_params = nn_params
         end
-        scaled_nn_params = NamedTuple{NP}(scaled_nn_vals)
     else
         scaled_nn_params = NamedTuple()
         st_nn = st.st_nn
@@ -429,7 +420,7 @@ Forward pass of the hybrid model.
 Evaluates the neural networks to predict parameters, merges them with scaled global parameters and fixed parameters, and executes the mechanistic model.
 Returns a tuple `(out, st_new)`.
 """
-function (m::HybridModel{T, P, MM, NP, GP, FP, KW, EX})(ds_k::Tuple, ps, st) where {T, P, MM, NP, GP, FP, KW, EX}
+function (m::HybridModel{T, P, MM, NP, GP, FP})(ds_k::Tuple, ps, st) where {T, P, MM, NP, GP, FP}
     parameters = m.parameters
 
     # 1) Scale global parameters (handle empty case)
@@ -452,28 +443,30 @@ function (m::HybridModel{T, P, MM, NP, GP, FP, KW, EX})(ds_k::Tuple, ps, st) whe
     #    "loss-only" parameters (e.g. a learned noise scale used only in the loss)
     #    can be defined without the mechanistic model having to accept them. They
     #    still live in `all_params` and are exposed below under `parameters`.
-    y_pred = m.mechanistic_model(; _mechanistic_kwargs(Val(KW), all_kwargs)...)
+    y_pred = m.mechanistic_model(; _mechanistic_kwargs(m, all_kwargs)...)
 
     # Parameters the mechanistic model does not consume (e.g. loss-only ones such as
     # a learned noise scale) are surfaced at the top level so they can be monitored
     # and plotted, in addition to always being available under `parameters`.
-    extra_params = _extra_params(Val(EX), all_params)
+    extra_params = _extra_params(m, all_params)
     out = (; y_pred..., extra_params..., parameters = all_params, out_extra...)
     st_new = (; st_new_nns..., fixed = st.fixed)
 
     return out, st_new
 end
 
-_mechanistic_kwargs(::Val{nothing}, all_kwargs::NamedTuple) = all_kwargs
-_mechanistic_kwargs(::Val{KW}, all_kwargs::NamedTuple) where {KW} = NamedTuple{KW}(all_kwargs)
-_extra_params(::Val{EX}, all_params) where {EX} = NamedTuple{EX}(all_params)
+_mechanistic_kwargs(::HybridModel{T, P, MM, NP, GP, FP, nothing}, all_kwargs::NamedTuple) where {T, P, MM, NP, GP, FP} = all_kwargs
+_mechanistic_kwargs(::HybridModel{T, P, MM, NP, GP, FP, KW}, all_kwargs::NamedTuple) where {T, P, MM, NP, GP, FP, KW} =
+    NamedTuple{KW}(all_kwargs)
+_extra_params(::HybridModel{T, P, MM, NP, GP, FP, KW, EX}, all_params) where {T, P, MM, NP, GP, FP, KW, EX} =
+    NamedTuple{EX}(all_params)
 
 function (m::HybridModel)(ds_k, ps, st)
     # Forward pass fallback when ds_k is not explicitly typed as Tuple
     return m(Tuple(ds_k), ps, st)
 end
 
-# Returns the tuple of `available` names accepted by `f`, or `nothing` to signal
+# Returns the tuple of `all_kwargs` names accepted by `f`, or `nothing` to signal
 # "pass everything" (the model slurps `kwargs...`, or has no introspectable kwargs).
 function _accepted_kwarg_names(f, available::Tuple)
     names = Symbol[]

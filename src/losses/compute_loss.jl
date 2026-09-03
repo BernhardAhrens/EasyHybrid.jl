@@ -132,7 +132,16 @@ function _target_loss(ŷ, y, y_nan, target, loss_spec)
 end
 
 function assemble_loss(ŷ, y, y_nan, targets, loss_spec)
-    return [_target_loss(ŷ, y, y_nan, target, loss_spec) for target in targets]
+    return [
+        begin
+                y_t = _get_target_y(y, target)
+                ŷ_t = _get_target_ŷ(ŷ, y_t, target)
+                y_nan_t = _get_target_y(y_nan, target)
+                _apply_loss(ŷ_t, y_t, y_nan_t, loss_spec)
+                # _apply_loss(ŷ_t, y_t, _get_target_nan(y_nan, target), loss_spec)
+            end
+            for target in targets
+    ]
 end
 assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec) =
     map(target -> _target_loss(ŷ, y, y_nan, target, loss_spec), targets)

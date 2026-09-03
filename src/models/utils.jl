@@ -48,11 +48,8 @@ inv_sigmoid(y) = log.(y ./ (1 .- y))
 
 Scale a single parameter using the minmax scaling function.
 """
-function scale_single_param_minmax(::Val{N}, hm::ParameterContainer) where {N}
-    bounds = getfield(hm.values, N)
-    ℓ, default_val, u = bounds[2], bounds[1], bounds[3]
-    return inv_sigmoid.((default_val .- ℓ) ./ (u .- ℓ))
+function scale_single_param_minmax(name, hm::ParameterContainer)
+    ℓ = lower(hm)[name]
+    u = upper(hm)[name]
+    return inv_sigmoid.((default(hm)[name] .- ℓ) ./ (u .- ℓ))
 end
-
-scale_single_param_minmax(name::Symbol, hm::ParameterContainer) =
-    scale_single_param_minmax(Val(name), hm)
