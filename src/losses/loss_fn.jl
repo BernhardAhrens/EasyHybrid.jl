@@ -61,6 +61,13 @@ end
 function loss_fn(ŷ, y, y_nan, ::Val{:mse})
     return mean(abs2, (ŷ[y_nan] .- y[y_nan]))
 end
+
+function loss_fn(ŷ, y, y_nan::AbstractArray{Bool}, ::Val{:mse})
+    n = count(y_nan)
+    z = zero(eltype(ŷ))
+    s = sum(ifelse.(y_nan, abs2.(ŷ .- y), z))
+    return s / convert(typeof(s), n)
+end
 function loss_fn(ŷ, y, y_nan, ::Val{:mae})
     return mean(abs, (ŷ[y_nan] .- y[y_nan]))
 end

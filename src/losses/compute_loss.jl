@@ -38,11 +38,23 @@ function compute_loss(
 end
 
 function compute_loss(
-        HM::HybridModel, ps, st, ((x, forcings), (y_t, y_nan)),
+        HM::HybridModel{T, <:Vector, MM, NP, GP, FP, KW, EX, TG, PC, SN}, ps, st,
+        ((x, forcings), (y_t, y_nan)),
         logging::LoggingLoss{SymbolicLoss{S}, ExtraLoss{Nothing}, A, true}
-    ) where {S, A}
-    ŷ, st = HM((x, forcings), ps, st)
-    return _compute_loss(ŷ, y_t, y_nan, _targets(HM), Val(S), logging.agg), st, NamedTuple()
+    ) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN, S, A}
+    y_pred, _, st_nn = _hybrid_vector(HM, (x, forcings), ps, st)
+    return _compute_loss(y_pred, y_t, y_nan, TG, Val(S), logging.agg), _pack_st((; st_nn), st.fixed), NamedTuple()
+end
+
+function compute_loss(
+        HM::HybridModel{T, <:NamedTuple, MM, NP, GP, FP, KW, EX, TG, PC, SN}, ps, st,
+        ((x, forcings), (y_t, y_nan)),
+        logging::LoggingLoss{SymbolicLoss{S}, ExtraLoss{Nothing}, A, true}
+    ) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN, S, A}
+    scaled_nn_params, st_new_nns, _ = _run_nn(HM, (x, forcings), ps, st)
+    all_params = _all_params(Val{NP}(), Val{GP}(), Val{FP}(), scaled_nn_params, ps, st, HM.parameters)
+    y_pred = _call_mech(HM.mechanistic_model, forcings, all_params, Val{KW}())
+    return _compute_loss(y_pred, y_t, y_nan, TG, Val(S), logging.agg), _pack_st(st_new_nns, st.fixed), NamedTuple()
 end
 
 function compute_loss(
@@ -66,6 +78,12 @@ _targets(HM) = HM.targets
 function _compute_loss(ŷ, y, y_nan, targets, loss_spec, agg::Function)
     losses = assemble_loss(ŷ, y, y_nan, targets, loss_spec)
     return agg(losses)
+end
+
+function _compute_loss(ŷ, y::NamedTuple, y_nan::NamedTuple, targets::NTuple{1, Symbol}, loss_spec::Val, agg::Function)
+    t = getfield(targets, 1)
+    y_t = getfield(y, t)
+    return agg((_apply_loss(_get_target_ŷ(ŷ, y_t, t), y_t, getfield(y_nan, t), loss_spec),))
 end
 
 function _compute_loss(ŷ, y, y_nan, targets, loss_types::Vector, agg::Function)

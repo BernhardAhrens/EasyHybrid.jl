@@ -142,6 +142,12 @@ using EasyHybrid: bestdirection, isbetter, check_training_loss, Minimize, Maximi
         # Test NaN handling for generic functions
         @test loss_fn(ŷ, y, y_nan, simple_loss) ≈ mean(abs2, valid_ŷ .- valid_y)
         @test loss_fn(ŷ, y, y_nan, (weighted_loss, (2.0,))) ≈ 2.0 * mean(abs2, valid_ŷ .- valid_y)
+
+        # Masked positions may be NaN; they must not poison :mse
+        ŷ_nan = [1.0, NaN, 3.0, 4.0]
+        y_ignored = [1.1, 99.0, 3.2, 3.8]
+        mask_skip = [true, false, true, true]
+        @test loss_fn(ŷ_nan, y_ignored, mask_skip, Val(:mse)) ≈ mean(abs2, [1.0, 3.0, 4.0] .- [1.1, 3.2, 3.8])
     end
 
     @testset "bestdirection" begin
