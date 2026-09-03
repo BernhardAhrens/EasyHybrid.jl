@@ -378,13 +378,7 @@ function _run_nn(m::HybridModel{T, <:NamedTuple, MM, NP, GP, FP, KW, EX, TG, PC,
     end
     nn_outputs = NamedTuple{nn_names}(map(first, applied))
     nn_states = NamedTuple{nn_names}(map(last, applied))
-
-    scaled_vals = map(nn_names, NP) do nn_name, param_name
-        val = eachslice(nn_outputs[nn_name]; dims = 1)[1]
-        return SN ? scale_single_param(Val(param_name), val, m.parameters) : val
-    end
-    scaled_nn_params = NamedTuple{NP}(scaled_vals)
-
+    scaled_nn_params = _scale_named(Val{NP}(), Val{SN}(), nn_outputs, m.parameters)
     return scaled_nn_params, nn_states, (; nn_outputs = nn_outputs)
 end
 
@@ -396,20 +390,11 @@ Applies the neural network to the given predictors, slices the output for multip
 Returns scaled parameter values, updated states, and raw network outputs.
 """
 function _run_nn(m::HybridModel{T, <:Vector, MM, NP, GP, FP, KW, EX, TG, PC, SN}, ds_k::Tuple, ps, st) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN}
-    if !isempty(NP)
-        nn_out, st_nn = LuxCore.apply(m.NNs, ds_k[1], ps.ps, st.st_nn)
-        slices = eachslice(nn_out, dims = 1)
-        nn_params = NamedTuple{NP}(ntuple(i -> slices[i], Val(length(NP))))
-        if SN
-            scaled_nn_vals = map(name -> scale_single_param(Val(name), nn_params[name], m.parameters), NP)
-            scaled_nn_params = NamedTuple{NP}(scaled_nn_vals)
-        else
-            scaled_nn_params = nn_params
-        end
-    else
-        scaled_nn_params = NamedTuple()
-        st_nn = st.st_nn
+    if NP === ()
+        return NamedTuple(), (; st_nn = st.st_nn), (;)
     end
+    nn_out, st_nn = LuxCore.apply(m.NNs, ds_k[1], ps.ps, st.st_nn)
+    scaled_nn_params = _nn_params(Val{NP}(), Val{SN}(), nn_out, m.parameters)
     return scaled_nn_params, (; st_nn = st_nn), (;)
 end
 
@@ -420,31 +405,70 @@ Forward pass of the hybrid model.
 Evaluates the neural networks to predict parameters, merges them with scaled global parameters and fixed parameters, and executes the mechanistic model.
 Returns a tuple `(out, st_new)`.
 """
-function (m::HybridModel{T, P, MM, NP, GP, FP, KW})(ds_k::Tuple, ps, st) where {T, P, MM, NP, GP, FP, KW}
-    parameters = m.parameters
-
-    # 1) Scale global parameters (handle empty case)
-    global_params = NamedTuple{GP}(map(g -> scale_single_param(Val(g), ps[g], parameters), GP))
-
-    # 2) Run neural network(s)
+function (m::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN})(ds_k::Tuple, ps, st) where {T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN}
     scaled_nn_params, st_new_nns, out_extra = _run_nn(m, ds_k, ps, st)
-
-    # 3) Pick fixed parameters (handle empty case)
-    fixed_params = NamedTuple{FP}(map(f -> st.fixed[f], FP))
-
-    # 4) merge all parameters
-    all_params = merge(scaled_nn_params, global_params, fixed_params)
-
+    all_params = _all_params(Val{NP}(), Val{GP}(), Val{FP}(), scaled_nn_params, ps, st, m.parameters)
     y_pred = _call_mech(m.mechanistic_model, ds_k[2], all_params, Val{KW}())
-
-    # Parameters the mechanistic model does not consume (e.g. loss-only ones such as
-    # a learned noise scale) are surfaced at the top level so they can be monitored
-    # and plotted, in addition to always being available under `parameters`.
     extra_params = _extra_params(m, all_params)
-    out = (; y_pred..., extra_params..., parameters = all_params, out_extra...)
+    out = _pack_out(y_pred, extra_params, all_params, out_extra)
     st_new = (; st_new_nns..., fixed = st.fixed)
-
     return out, st_new
+end
+
+@generated function _nn_params(::Val{NP}, ::Val{true}, nn_out, parameters) where NP
+    scaled = ntuple(length(NP)) do i
+        :(scale_single_param(Val($(QuoteNode(NP[i]))), slices[$i], parameters))
+    end
+    return quote
+        slices = eachslice(nn_out, dims = 1)
+        NamedTuple{NP}(($(scaled...),))
+    end
+end
+
+@generated function _nn_params(::Val{NP}, ::Val{false}, nn_out, _) where NP
+    vals = ntuple(i -> :(slices[$i]), length(NP))
+    return quote
+        slices = eachslice(nn_out, dims = 1)
+        NamedTuple{NP}(($(vals...),))
+    end
+end
+
+@generated function _scale_named(::Val{NP}, ::Val{SN}, nn_outputs, parameters) where {NP, SN}
+    scaled = ntuple(length(NP)) do i
+        n = NP[i]
+        slice = :(eachslice(getfield(nn_outputs, $(QuoteNode(n))); dims = 1)[1])
+        SN ? :(scale_single_param(Val($(QuoteNode(n))), $slice, parameters)) : slice
+    end
+    return :(NamedTuple{NP}(($(scaled...),)))
+end
+
+@generated function _all_params(::Val{NP}, ::Val{GP}, ::Val{FP}, nn, ps, st, parameters) where {NP, GP, FP}
+    parts = Expr[]
+    for n in NP
+        push!(parts, Expr(:kw, n, :(getfield(nn, $(QuoteNode(n))))))
+    end
+    for n in GP
+        push!(parts, Expr(:kw, n, :(scale_single_param(Val($(QuoteNode(n))), getproperty(ps, $(QuoteNode(n))), parameters))))
+    end
+    for n in FP
+        push!(parts, Expr(:kw, n, :(getproperty(getproperty(st, :fixed), $(QuoteNode(n))))))
+    end
+    return :( (; $(parts...) ) )
+end
+
+@generated function _pack_out(y_pred::NamedTuple{Y}, extra::NamedTuple{E}, all_params, out_extra::NamedTuple{O}) where {Y, E, O}
+    gets = Expr[]
+    for n in Y
+        push!(gets, Expr(:kw, n, :(getfield(y_pred, $(QuoteNode(n))))))
+    end
+    for n in E
+        push!(gets, Expr(:kw, n, :(getfield(extra, $(QuoteNode(n))))))
+    end
+    push!(gets, Expr(:kw, :parameters, :all_params))
+    for n in O
+        push!(gets, Expr(:kw, n, :(getfield(out_extra, $(QuoteNode(n))))))
+    end
+    return :( (; $(gets...) ) )
 end
 
 _call_mech(f, forcing, params, ::Val{nothing}) = f(; merge(forcing, params)...)
