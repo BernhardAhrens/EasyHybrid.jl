@@ -412,7 +412,7 @@ ChainRulesCore.@non_differentiable _pack_st(::Any, ::Any)
     if NP === ()
         push!(stmts, :(st_nn = st.st_nn))
     else
-        push!(stmts, :(nn_out, st_nn = LuxCore.apply(m.NNs, ds_k[1], ps.ps, st.st_nn)))
+        push!(stmts, :((nn_out, st_nn) = LuxCore.apply(m.NNs, ds_k[1], ps.ps, st.st_nn)))
         push!(stmts, :(slices = eachslice(nn_out, dims = 1)))
     end
 
