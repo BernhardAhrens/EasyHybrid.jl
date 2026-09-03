@@ -1,4 +1,4 @@
-export UncertaintyMethod, MCDropout, DeepEnsemble, Bootstrap
+export UncertaintyMethod, MCDropout, DeepEnsemble, Bootstrap, SGLD
 export UncertaintyResult, estimate_uncertainty
 
 # =============================================================================
@@ -16,24 +16,39 @@ export UncertaintyResult, estimate_uncertainty
 #   * `Bootstrap`     — train several models on bootstrap resamples of the data
 #                       (with a fixed initialization seed) so the spread is driven
 #                       purely by data resampling. Well suited to small datasets.
+#   * `SGLD`          — Stochastic Gradient Langevin Dynamics: continue from a
+#                       trained (MAP) point, injecting Gaussian noise into
+#                       gradient steps so the trajectory samples an approximate
+#                       posterior over the selected parameters.
+#
+# Parameter taxonomy (hybrid models)
+# ----------------------------------
+#   * Global physical parameters (`global_param_names`, e.g. Q10) are free
+#     scalars in `ps`. Dropout does not perturb them; SGLD with `scope = :global`
+#     (or `:all`) and ensembles do.
+#   * Latent / process parameters (`neural_param_names`, e.g. rb) are *outputs*
+#     of the neural network h(x; θ), not free variables. They cannot be sampled
+#     independently. A posterior over latents is induced by sampling the NN
+#     weights θ (MC dropout, SGLD `scope = :nn` / `:all`, or ensembles).
+#   * NN weights live in `ps.ps` (and named NN branches).
 #
 # What is being quantified?
 # -------------------------
-# All three methods characterise how much the *model prediction* varies under a
-# source of randomness (dropout masks, weight initialization, or the data
-# sample). That spread is predominantly *epistemic* (model/parameter)
-# uncertainty. To additionally capture *aleatoric* (irreducible data-noise)
-# uncertainty, pair these with a mechanistic/neural output that predicts a noise
-# scale and a Gaussian negative-log-likelihood training loss; the spread returned
-# here then reflects epistemic uncertainty on top of that learned noise model.
-# The `combine` helper on the result also reports the total predictive spread.
+# These methods characterise how much the *model prediction* (and, where
+# applicable, global / latent parameters) varies under a source of randomness
+# (dropout masks, weight initialization, data resampling, or Langevin noise).
+# That spread is predominantly *epistemic* (model/parameter) uncertainty. To
+# additionally capture *aleatoric* (irreducible data-noise) uncertainty, pair
+# these with a mechanistic/neural output that predicts a noise scale and a
+# Gaussian negative-log-likelihood training loss; the spread returned here then
+# reflects epistemic uncertainty on top of that learned noise model.
 
 """
     UncertaintyMethod
 
 Abstract supertype for the uncertainty quantification methods accepted by
-[`estimate_uncertainty`](@ref): [`MCDropout`](@ref), [`DeepEnsemble`](@ref) and
-[`Bootstrap`](@ref).
+[`estimate_uncertainty`](@ref): [`MCDropout`](@ref), [`DeepEnsemble`](@ref),
+[`Bootstrap`](@ref) and [`SGLD`](@ref).
 """
 abstract type UncertaintyMethod end
 
@@ -51,7 +66,8 @@ Requirements checked by [`estimate_uncertainty`](@ref):
   * the model must **not** estimate any global (physical) parameters. Global
     parameters are single point estimates that dropout does not perturb, so MC
     dropout would report zero uncertainty for them and misrepresent the
-    prediction. Use [`DeepEnsemble`](@ref) or [`Bootstrap`](@ref) instead.
+    prediction. Use [`SGLD`](@ref) (`scope = :global` or `:all`),
+    [`DeepEnsemble`](@ref) or [`Bootstrap`](@ref) instead.
 """
 struct MCDropout <: UncertaintyMethod
     n_samples::Int
@@ -107,6 +123,64 @@ end
 Bootstrap(; n_models::Int = 20, seed::Int = 161803) = Bootstrap(n_models, seed)
 
 """
+    SGLD(; n_samples = 50, n_burnin = 100, n_thin = 10, lr = 1f-3,
+         temperature = 1f-2, batchsize = 64, scope = :all, seed = nothing)
+
+Stochastic Gradient Langevin Dynamics (Welling & Teh, 2011). Starts from a MAP
+estimate (`train_output`) and injects Gaussian noise into minibatch gradient
+steps so the trajectory samples an approximate posterior:
+
+```
+θ ← θ − lr ∇L(θ) + √(2 lr T) ε,    ε ∼ 𝒩(0, I)
+```
+
+`L` is the training loss (MSE by default). That is not a true negative log
+likelihood, so `temperature` is a practical knob rather than a calibrated
+thermodynamic temperature. Prefer a Gaussian NLL (`training_loss` / `extra_loss`)
+when a well-defined posterior is required.
+
+# Scope (which parameters are sampled)
+
+  * `:all` (default) — NN weights **and** global physical parameters.
+  * `:global` — only global physical parameters (cheap; fills the gap that
+    [`MCDropout`](@ref) cannot). Latent/process parameters stay at their MAP
+    network output.
+  * `:nn` — only NN weights. Global parameters stay at the MAP point; latents
+    `h(x; θ)` then vary because θ does.
+
+Latent / process parameters (`neural_param_names`) are NN outputs, not free
+variables. SGLD does not sample them independently: their posterior is induced
+by sampling the NN weights (`scope = :nn` or `:all`).
+"""
+struct SGLD <: UncertaintyMethod
+    n_samples::Int
+    n_burnin::Int
+    n_thin::Int
+    lr::Float32
+    temperature::Float32
+    batchsize::Int
+    scope::Symbol
+    seed::Union{Nothing, Int}
+end
+function SGLD(;
+        n_samples::Int = 50,
+        n_burnin::Int = 100,
+        n_thin::Int = 10,
+        lr::Real = 1.0f-3,
+        temperature::Real = 1.0f-2,
+        batchsize::Int = 64,
+        scope::Symbol = :all,
+        seed::Union{Nothing, Int} = nothing,
+    )
+    scope in (:all, :global, :nn) ||
+        throw(ArgumentError("SGLD scope must be :all, :global or :nn; got $(scope)."))
+    n_samples >= 2 || throw(ArgumentError("SGLD n_samples must be ≥ 2, got $n_samples."))
+    n_thin >= 1 || throw(ArgumentError("SGLD n_thin must be ≥ 1, got $n_thin."))
+    n_burnin >= 0 || throw(ArgumentError("SGLD n_burnin must be ≥ 0, got $n_burnin."))
+    return SGLD(n_samples, n_burnin, n_thin, Float32(lr), Float32(temperature), batchsize, scope, seed)
+end
+
+"""
     UncertaintyResult
 
 Result of [`estimate_uncertainty`](@ref).
@@ -122,11 +196,17 @@ Result of [`estimate_uncertainty`](@ref).
   per-sample (MC pass or ensemble member) predictions.
 - `params`: `NamedTuple` keyed by the model's estimated global parameter names;
   each entry is a `(; mean, std, samples)` `NamedTuple` giving the spread of that
-  physical parameter across ensemble members. Empty for MC dropout (which is not
-  applicable when global parameters are estimated).
-- `n`: number of MC passes / ensemble members that contributed.
+  physical parameter across samples/members. Empty for MC dropout (which is not
+  applicable when global parameters are estimated) and for SGLD `scope = :nn`.
+- `latents`: `NamedTuple` keyed by the model's neural / process parameter names
+  (`neural_param_names`); each entry is a `(; mean, std, samples)` `NamedTuple`
+  of *per-observation* vectors / `n_obs × n` matrices. These are NN outputs
+  `h(x; θ)`, so they vary when θ is perturbed (dropout, SGLD `:nn`/`:all`,
+  ensembles) and stay put when only globals are sampled (SGLD `:global`).
+- `n`: number of MC passes / ensemble members / Langevin samples that contributed.
 - `quantiles`: the `(lower, upper)` probability levels used for the interval.
-- `metadata`: method-specific extra information (seeds, dropout rates, …).
+- `metadata`: method-specific extra information (seeds, dropout rates, SGLD
+  hyperparameters, …).
 """
 struct UncertaintyResult
     method::UncertaintyMethod
@@ -137,6 +217,7 @@ struct UncertaintyResult
     upper::NamedTuple
     samples::NamedTuple
     params::NamedTuple
+    latents::NamedTuple
     n::Int
     quantiles::Tuple{Float64, Float64}
     metadata::NamedTuple
@@ -154,6 +235,10 @@ function Base.show(io::IO, ::MIME"text/plain", r::UncertaintyResult)
     for g in keys(r.params)
         p = r.params[g]
         println(io, "  • global param $(g): $(round(p.mean; digits = 4)) ± $(round(p.std; digits = 4))")
+    end
+    for n in keys(r.latents)
+        lat = r.latents[n]
+        println(io, "  • latent $(n): mean std = $(round(mean(lat.std); digits = 4)) over $(length(lat.mean)) obs")
     end
     if !isempty(r.metadata)
         println(io, "  metadata: $(r.metadata)")
@@ -224,6 +309,11 @@ const UQModel = Union{HybridModel, SingleNNModel, MultiNNModel}
 _global_param_names(m::HybridModel) = m.global_param_names
 _global_param_names(::UQModel) = Symbol[]
 
+# Neural / process ("latent") parameters: per-observation NN outputs. Pure NN
+# models expose targets directly and have no separate latent parameter block.
+_neural_param_names(m::HybridModel) = m.neural_param_names
+_neural_param_names(::UQModel) = Symbol[]
+
 # -----------------------------------------------------------------------------
 # Prediction / aggregation helpers
 # -----------------------------------------------------------------------------
@@ -234,15 +324,21 @@ function _predict_targets(model::UQModel, x, ps, st)
     return NamedTuple(t => vec(out[t]) for t in model.targets)
 end
 
-# Forward pass returning both per-target predictions and the scalar value of each
-# estimated global parameter (constant across observations).
-function _predict_targets_and_params(model::UQModel, x, ps, st)
+# Forward pass returning per-target predictions, scalar global parameters, and
+# per-observation latent / process parameters.
+function _predict_full(model::UQModel, x, ps, st)
     out, _ = model(x, ps, st)
     tgt = NamedTuple(t => vec(out[t]) for t in model.targets)
     gnames = _global_param_names(model)
     prm = isempty(gnames) ? NamedTuple() :
         NamedTuple(g => Float64(first(vec(out.parameters[g]))) for g in gnames)
-    return tgt, prm
+    return tgt, prm, _extract_latents(model, out)
+end
+
+function _extract_latents(model::UQModel, out)
+    names = _neural_param_names(model)
+    (isempty(names) || !hasproperty(out, :parameters)) && return NamedTuple()
+    return NamedTuple(n => Float64.(vec(out.parameters[n])) for n in names)
 end
 
 # Aggregate a Vector (over members) of per-parameter NamedTuples into
@@ -256,6 +352,22 @@ function _aggregate_params(param_preds::Vector{<:NamedTuple}, global_names)
         out = merge(out, NamedTuple{(g,)}((entry,)))
     end
     return out
+end
+
+# Aggregate per-observation latent / process parameters into the same nested
+# (; mean, std, samples) layout used for globals, but with vector-valued mean/std
+# and an n_obs × n sample matrix.
+function _aggregate_latents(latent_preds::Vector{<:NamedTuple}, names, quantiles)
+    (isempty(names) || isempty(latent_preds) || isempty(keys(first(latent_preds)))) &&
+        return NamedTuple()
+    means, stds, _, _, samples = _aggregate(latent_preds, names, quantiles)
+    return NamedTuple(n => (; mean = means[n], std = stds[n], samples = samples[n]) for n in names)
+end
+
+# Backward-compatible wrapper used by older call sites.
+function _predict_targets_and_params(model::UQModel, x, ps, st)
+    tgt, prm, _ = _predict_full(model, x, ps, st)
+    return tgt, prm
 end
 
 # Aggregate a Vector (over samples/members) of per-target NamedTuples into
@@ -335,7 +447,8 @@ end
     estimate_uncertainty(method, model, data, [train_output]; kwargs...) -> UncertaintyResult
 
 Generic uncertainty quantification for a hybrid `model`. The `method` selects the
-algorithm — [`MCDropout`](@ref), [`DeepEnsemble`](@ref) or [`Bootstrap`](@ref).
+algorithm — [`MCDropout`](@ref), [`DeepEnsemble`](@ref), [`Bootstrap`](@ref)
+or [`SGLD`](@ref).
 
 # Methods
 
@@ -343,6 +456,9 @@ algorithm — [`MCDropout`](@ref), [`DeepEnsemble`](@ref) or [`Bootstrap`](@ref)
     trained parameters/state in `train_output` (a [`TrainResults`](@ref)); no
     retraining. Errors if the network has no dropout, or if the model estimates
     global parameters.
+  * `estimate_uncertainty(m::SGLD, model, data, train_output; …)` — continues
+    from `train_output` with Langevin noise; no retraining from scratch. See
+    [`SGLD`](@ref) for `scope` (`:all` / `:global` / `:nn`).
   * `estimate_uncertainty(m::DeepEnsemble, model, data; train_kwargs...)` and
     `estimate_uncertainty(m::Bootstrap, model, data; train_kwargs...)` — (re)train
     `n_models` members; all `train_kwargs` are forwarded to [`train`](@ref).
@@ -366,7 +482,7 @@ function estimate_uncertainty(
             "MC dropout is not applicable: the model estimates global parameter(s) " *
             "$(_global_param_names(model)). Global (physical) parameters are single point " *
             "estimates that dropout does not perturb, so MC dropout would report no " *
-            "uncertainty for them. Use DeepEnsemble or Bootstrap instead."
+            "uncertainty for them. Use SGLD (scope = :global or :all), DeepEnsemble, or Bootstrap instead."
         ))
     end
 
@@ -392,15 +508,18 @@ function estimate_uncertainty(
     # batch statistics of the evaluation batch in this mode.)
     st_mc = LuxCore.trainmode(st)
     preds = Vector{NamedTuple}(undef, method.n_samples)
+    latent_preds = Vector{NamedTuple}(undef, method.n_samples)
     for i in 1:method.n_samples
         out, st_mc = model(x, ps, st_mc)
         preds[i] = NamedTuple(t => vec(out[t]) for t in model.targets)
+        latent_preds[i] = _extract_latents(model, out)
     end
 
     q = (Float64(quantiles[1]), Float64(quantiles[2]))
     means, stds, lowers, uppers, samples = _aggregate(preds, model.targets, q)
+    latents = _aggregate_latents(latent_preds, _neural_param_names(model), q)
     meta = (; dropout_rates = rates)
-    return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, NamedTuple(), method.n_samples, q, meta)
+    return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, NamedTuple(), latents, method.n_samples, q, meta)
 end
 
 # --- Deep ensemble & bootstrap (shared runner) -------------------------------
@@ -417,6 +536,7 @@ function _ensemble_uncertainty(
 
     preds = Vector{NamedTuple}(undef, n_models)
     param_preds = Vector{NamedTuple}(undef, n_models)
+    latent_preds = Vector{NamedTuple}(undef, n_models)
     for (i, seed) in enumerate(seeds)
         # A separate RNG per member keeps bootstrap draws reproducible and
         # independent of the training seed.
@@ -425,14 +545,15 @@ function _ensemble_uncertainty(
         verbose && @info "Uncertainty: training ensemble member $i/$n_models (seed = $seed, bootstrap = $use_bootstrap)"
         res = train(model, member_data; member_kwargs...)
         res === nothing && throw(ErrorException("Training member $i returned nothing (data preparation failed)."))
-        preds[i], param_preds[i] = _predict_targets_and_params(model, x_eval, res.ps, LuxCore.testmode(res.st))
+        preds[i], param_preds[i], latent_preds[i] = _predict_full(model, x_eval, res.ps, LuxCore.testmode(res.st))
     end
 
     q = (Float64(quantiles[1]), Float64(quantiles[2]))
     means, stds, lowers, uppers, samples = _aggregate(preds, model.targets, q)
     params = _aggregate_params(param_preds, _global_param_names(model))
+    latents = _aggregate_latents(latent_preds, _neural_param_names(model), q)
     meta = (; seeds = seeds, bootstrap = use_bootstrap)
-    return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, params, n_models, q, meta)
+    return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, params, latents, n_models, q, meta)
 end
 
 function estimate_uncertainty(
@@ -471,18 +592,168 @@ function estimate_uncertainty(
 
     preds = Vector{NamedTuple}(undef, method.n_models)
     param_preds = Vector{NamedTuple}(undef, method.n_models)
+    latent_preds = Vector{NamedTuple}(undef, method.n_models)
     for i in 1:method.n_models
         member_data = bootstrap_resample(data, Random.MersenneTwister(resample_seeds[i]))
         member_kwargs = merge(base_kwargs, (; random_seed = method.seed))
         verbose && @info "Uncertainty: training bootstrap member $i/$(method.n_models) (init seed = $(method.seed), resample seed = $(resample_seeds[i]))"
         res = train(model, member_data; member_kwargs...)
         res === nothing && throw(ErrorException("Training bootstrap member $i returned nothing (data preparation failed)."))
-        preds[i], param_preds[i] = _predict_targets_and_params(model, x_eval, res.ps, LuxCore.testmode(res.st))
+        preds[i], param_preds[i], latent_preds[i] = _predict_full(model, x_eval, res.ps, LuxCore.testmode(res.st))
     end
 
     q = (Float64(quantiles[1]), Float64(quantiles[2]))
     means, stds, lowers, uppers, samples = _aggregate(preds, model.targets, q)
     params = _aggregate_params(param_preds, _global_param_names(model))
+    latents = _aggregate_latents(latent_preds, _neural_param_names(model), q)
     meta = (; init_seed = method.seed, resample_seeds = resample_seeds, bootstrap = true)
-    return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, params, method.n_models, q, meta)
+    return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, params, latents, method.n_models, q, meta)
+end
+
+# --- Stochastic Gradient Langevin Dynamics -----------------------------------
+
+function estimate_uncertainty(
+        method::SGLD, model::UQModel, data, train_output::TrainResults;
+        eval_data = data, quantiles::Tuple{<:Real, <:Real} = (0.025, 0.975),
+        training_loss = :mse, extra_loss = nothing, agg = sum,
+        verbose::Bool = true,
+    )
+    if method.scope == :global && isempty(_global_param_names(model))
+        throw(ArgumentError(
+            "SGLD scope = :global requires estimated global parameter(s), but this model " *
+            "has none. Use scope = :nn or :all to sample neural-network weights (which " *
+            "induce a posterior over latent/process parameters)."
+        ))
+    end
+
+    rng = method.seed === nothing ? Random.default_rng() : Random.MersenneTwister(method.seed)
+    cfg = TrainConfig(;
+        batchsize = method.batchsize,
+        plotting = false,
+        show_progress = false,
+        save_training = false,
+        training_loss = training_loss,
+        extra_loss = extra_loss,
+        agg = agg,
+    )
+    ((x_train, forcings_train), y_train) = prepare_data(model, data)
+    mask_train, empty_mask = valid_mask(y_train)
+    empty_mask && throw(ArgumentError("SGLD: training data has no valid (non-NaN) targets."))
+    loader = build_loader(x_train, forcings_train, y_train, mask_train, cfg)
+    loss_fn = build_loss_fn(model, cfg)
+    x_eval = prepare_data(model, eval_data)[1]
+
+    ps = deepcopy(train_output.ps)
+    st = LuxCore.trainmode(deepcopy(train_output.st))
+    η = convert(Float32, method.lr)
+    σ = sqrt(2 * η * convert(Float32, method.temperature))
+
+    n_keep = method.n_samples
+    preds = Vector{NamedTuple}(undef, n_keep)
+    param_preds = Vector{NamedTuple}(undef, n_keep)
+    latent_preds = Vector{NamedTuple}(undef, n_keep)
+    kept = 0
+    step = 0
+    last_loss = NaN32
+
+    verbose && @info "Uncertainty: SGLD sampling (scope = $(method.scope), burn-in = $(method.n_burnin), n_samples = $n_keep, thin = $(method.n_thin))"
+    while kept < n_keep
+        progressed = false
+        for batch in loader
+            progressed = true
+            x_batch, y_batch = batch
+            (x_col, y_col) = collect_dim_data(x_batch, y_batch, cfg)
+            isemptybatch(y_col[2]) && continue
+
+            ps, st, last_loss = _sgld_step(model, ps, st, (x_col, y_col), loss_fn, η, σ, rng, method.scope)
+            step += 1
+
+            if step > method.n_burnin && ((step - method.n_burnin) % method.n_thin == 0)
+                kept += 1
+                preds[kept], param_preds[kept], latent_preds[kept] =
+                    _predict_full(model, x_eval, ps, LuxCore.testmode(st))
+                kept >= n_keep && break
+            end
+        end
+        progressed || throw(ErrorException("SGLD data loader is empty; cannot sample."))
+    end
+
+    q = (Float64(quantiles[1]), Float64(quantiles[2]))
+    means, stds, lowers, uppers, samples = _aggregate(preds, model.targets, q)
+    gnames = method.scope == :nn ? Symbol[] : _global_param_names(model)
+    params = _aggregate_params(param_preds, gnames)
+    latents = _aggregate_latents(latent_preds, _neural_param_names(model), q)
+    meta = (;
+        scope = method.scope,
+        n_burnin = method.n_burnin,
+        n_thin = method.n_thin,
+        lr = method.lr,
+        temperature = method.temperature,
+        batchsize = method.batchsize,
+        n_steps = step,
+        last_loss = Float64(last_loss),
+        seed = method.seed,
+    )
+    return UncertaintyResult(method, copy(model.targets), means, stds, lowers, uppers, samples, params, latents, n_keep, q, meta)
+end
+
+# One Langevin minibatch: ∇L via Zygote, then θ ← θ − η ∇L + σ ε on the selected keys.
+function _sgld_step(model, ps, st, data, loss_fn, η, σ, rng, scope)
+    (loss, st_new), back = Zygote.pullback(ps) do p
+        l, st2, _ = loss_fn(model, p, st, data)
+        (l, st2)
+    end
+    isfinite(loss) || throw(ErrorException(
+        "SGLD produced a non-finite loss (loss = $loss). Try a smaller `lr` or `temperature`."
+    ))
+    gs = first(back((one(loss), nothing)))
+    return _sgld_update(ps, gs, η, σ, rng, scope, model), st_new, loss
+end
+
+# Langevin update: θ ← θ − η ∇L + σ ε, applied to the selected top-level keys
+# of `ps` (`:all` / `:global` / `:nn`).
+function _sgld_update(ps, gs, η, σ, rng, scope::Symbol, model)
+    gnames = Set(_global_param_names(model))
+    keep = function (k)
+        scope === :all && return true
+        scope === :global && return k in gnames
+        return k ∉ gnames   # :nn
+    end
+    return _sgld_update_keys(ps, gs, η, σ, rng, keep)
+end
+
+function _sgld_update_keys(ps::NamedTuple, gs, η, σ, rng, keep)
+    return NamedTuple{keys(ps)}(
+        map(keys(ps)) do k
+            xk = getproperty(ps, k)
+            keep(k) ? _langevin_leaf(xk, getproperty(gs, k), η, σ, rng) : xk
+        end,
+    )
+end
+
+function _sgld_update_keys(ps::ComponentArray, gs, η, σ, rng, keep)
+    ps_new = copy(ps)
+    for k in keys(ps)
+        keep(k) || continue
+        newv = _langevin_leaf(ps[k], gs[k], η, σ, rng)
+        getproperty(ps_new, k) .= newv
+    end
+    return ps_new
+end
+
+_langevin_leaf(x, ::Nothing, η, σ, rng) = x
+
+function _langevin_leaf(x::NamedTuple, g, η, σ, rng)
+    return NamedTuple{keys(x)}(
+        map(k -> _langevin_leaf(getproperty(x, k), getproperty(g, k), η, σ, rng), keys(x)),
+    )
+end
+
+function _langevin_leaf(x::AbstractArray, g, η, σ, rng)
+    noise = randn(rng, eltype(x), size(x))
+    return @. x - η * g + σ * noise
+end
+
+function _langevin_leaf(x::Number, g, η, σ, rng)
+    return x - η * g + σ * randn(rng, typeof(x))
 end

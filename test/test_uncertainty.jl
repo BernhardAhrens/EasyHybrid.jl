@@ -149,3 +149,69 @@ end
     @test_throws ArgumentError estimate_uncertainty(
         DeepEnsemble(n_models = 3, seeds = [1, 2]), _model_global(), df; verbose = false, _TRAIN_KW...)
 end
+
+@testset "Uncertainty: SGLD for globals and latents" begin
+    df = _uq_data(200)
+    m = _model_global()   # neural :rb (latent), global :Q10
+    res = train(m, df; _TRAIN_KW...)
+
+    # :global samples Q10, leaves NN (and therefore rb) almost unmoved
+    ug = estimate_uncertainty(
+        SGLD(n_samples = 12, n_burnin = 20, n_thin = 2, lr = 0.01, temperature = 0.05,
+            batchsize = 64, scope = :global, seed = 7),
+        m, df, res; verbose = false,
+    )
+    @test ug isa UncertaintyResult
+    @test ug.n == 12
+    @test ug.metadata.scope == :global
+    @test haskey(ug.params, :Q10)
+    @test ug.params.Q10.std > 0
+    @test length(ug.params.Q10.samples) == 12
+    @test haskey(ug.latents, :rb)
+    @test length(ug.latents.rb.mean) == nrow(df)
+    @test size(ug.latents.rb.samples) == (nrow(df), 12)
+    @test mean(ug.std.reco) > 0   # Q10 noise propagates to the target
+
+    # :nn samples weights → latents vary; Q10 stays at the MAP point
+    un = estimate_uncertainty(
+        SGLD(n_samples = 12, n_burnin = 20, n_thin = 2, lr = 0.005, temperature = 0.02,
+            batchsize = 64, scope = :nn, seed = 11),
+        m, df, res; verbose = false,
+    )
+    @test isempty(un.params)
+    @test haskey(un.latents, :rb)
+    @test mean(un.latents.rb.std) > 0
+    @test mean(un.std.reco) > 0
+
+    # :all samples both
+    ua = estimate_uncertainty(
+        SGLD(n_samples = 8, n_burnin = 15, n_thin = 2, lr = 0.005, temperature = 0.02,
+            batchsize = 64, scope = :all, seed = 3),
+        m, df, res; verbose = false,
+    )
+    @test haskey(ua.params, :Q10)
+    @test ua.params.Q10.std > 0
+    @test mean(ua.latents.rb.std) > 0
+
+    # :global is rejected when the model has no global parameters
+    m_nn = _model_nodropout()
+    res_nn = train(m_nn, df; _TRAIN_KW...)
+    @test_throws ArgumentError estimate_uncertainty(
+        SGLD(n_samples = 4, n_burnin = 2, n_thin = 1, scope = :global, seed = 1),
+        m_nn, df, res_nn; verbose = false,
+    )
+
+    # constructor guards
+    @test_throws ArgumentError SGLD(scope = :nope)
+    @test_throws ArgumentError SGLD(n_samples = 1)
+end
+
+@testset "Uncertainty: latents under MC dropout" begin
+    df = _uq_data(200)
+    m = _model_dropout()   # neural :rb and :Q10, no globals
+    res = train(m, df; _TRAIN_KW...)
+    u = estimate_uncertainty(MCDropout(n_samples = 16), m, df, res)
+    @test haskey(u.latents, :rb)
+    @test mean(u.latents.rb.std) > 0
+    @test isempty(u.params)
+end
