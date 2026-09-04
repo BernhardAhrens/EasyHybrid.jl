@@ -382,26 +382,8 @@ function _run_nn(m::HybridModel{T, <:NamedTuple, MM, NP, GP, FP, KW, EX, TG, PC,
     return scaled_nn_params, nn_states, (; nn_outputs = nn_outputs)
 end
 
-"""
-    _run_nn(m::HybridModel{<:Any, <:Vector}, ds_k::Tuple, ps, st)
-
-Execute the forward pass for a single-neural network architecture.
-Applies the neural network to the given predictors, slices the output for multiple predicted parameters, and scales them if required.
-Returns scaled parameter values, updated states, and raw network outputs.
-"""
-function _run_nn(m::HybridModel{T, <:Vector, MM, NP, GP, FP, KW, EX, TG, PC, SN}, ds_k::Tuple, ps, st) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN}
-    if NP === ()
-        return NamedTuple(), (; st_nn = st.st_nn), (;)
-    end
-    nn_out, st_nn = LuxCore.apply(m.NNs, ds_k[1], ps.ps, st.st_nn)
-    scaled_nn_params = _nn_params(Val{NP}(), Val{SN}(), nn_out, m.parameters)
-    return scaled_nn_params, (; st_nn = st_nn), (;)
-end
-
-# Drop state from the AD tape; training differentiates parameters only.
-_pack_st(nn_states::NamedTuple, fixed) = (; nn_states..., fixed)
-ChainRulesCore.@non_differentiable _pack_st(::Any, ::Any)
-
+# Vector forward: bind NN / global / fixed params and call the mechanistic model.
+# `Val(true)` also returns `all_params` so the public call can pack `parameters`.
 @generated function _hybrid_vector(
         m::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN},
         ds_k::Tuple, ps, st, ::Val{need_params}
@@ -429,13 +411,12 @@ ChainRulesCore.@non_differentiable _pack_st(::Any, ::Any)
         push!(stmts, Expr(:(=), n, :(getproperty(st.fixed, $(QuoteNode(n))))))
     end
 
-    # Zygote's generated pullback drops unused arguments; mention them.
+    # Zygote drops unused generated-function args from the pullback.
     NP === () && GP === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(ps)))
     NP === () && KW === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(ds_k)))
     !SN && GP === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(m.parameters)))
 
-    pack_params = need_params || KW === nothing
-    if pack_params
+    if need_params || KW === nothing
         push!(stmts, :(all_params = (; $(all_names...))))
     end
 
@@ -450,47 +431,31 @@ ChainRulesCore.@non_differentiable _pack_st(::Any, ::Any)
         push!(stmts, :(y_pred = m.mechanistic_model(; $(args...))))
     end
 
-    if need_params
-        push!(stmts, :(return y_pred, all_params, st_nn))
-    else
-        push!(stmts, :(return y_pred, st_nn))
-    end
+    push!(stmts, need_params ? :(return y_pred, all_params, st_nn) : :(return y_pred, st_nn))
     return Expr(:block, stmts...)
 end
 
 function (m::HybridModel{T, <:Vector, MM, NP, GP, FP, KW, EX, TG, PC, SN})(ds_k::Tuple, ps, st) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN}
     y_pred, all_params, st_nn = _hybrid_vector(m, ds_k, ps, st, Val(true))
-    extra_params = _extra_params(Val{EX}(), all_params)
-    out = _pack_out(y_pred, extra_params, all_params, NamedTuple())
-    return out, _pack_st((; st_nn), st.fixed)
+    extra = NamedTuple{EX}(all_params)
+    out = (; y_pred..., extra..., parameters = all_params)
+    return out, ChainRulesCore.ignore_derivatives((; st_nn, fixed = st.fixed))
 end
 
+"""
+    (m::HybridModel)(ds_k::Tuple, ps, st)
+
+Forward pass of the hybrid model.
+Evaluates the neural networks to predict parameters, merges them with scaled global parameters and fixed parameters, and executes the mechanistic model.
+Returns a tuple `(out, st_new)`.
+"""
 function (m::HybridModel{T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN})(ds_k::Tuple, ps, st) where {T, P, MM, NP, GP, FP, KW, EX, TG, PC, SN}
     scaled_nn_params, st_new_nns, out_extra = _run_nn(m, ds_k, ps, st)
     all_params = _all_params(Val{NP}(), Val{GP}(), Val{FP}(), scaled_nn_params, ps, st, m.parameters)
     y_pred = _call_mech(m.mechanistic_model, ds_k[2], all_params, Val{KW}())
-    extra_params = _extra_params(Val{EX}(), all_params)
-    out = _pack_out(y_pred, extra_params, all_params, out_extra)
-    return out, _pack_st(st_new_nns, st.fixed)
-end
-
-@generated function _nn_params(::Val{NP}, ::Val{true}, nn_out, parameters) where {NP}
-    scaled = ntuple(length(NP)) do i
-        :(scale_single_param(Val($(QuoteNode(NP[i]))), slices[$i], parameters))
-    end
-    return quote
-        slices = eachslice(nn_out, dims = 1)
-        NamedTuple{NP}(($(scaled...),))
-    end
-end
-
-@generated function _nn_params(::Val{NP}, ::Val{false}, nn_out, parameters) where {NP}
-    vals = ntuple(i -> :(slices[$i]), length(NP))
-    return quote
-        ChainRulesCore.ignore_derivatives(parameters)
-        slices = eachslice(nn_out, dims = 1)
-        NamedTuple{NP}(($(vals...),))
-    end
+    extra = NamedTuple{EX}(all_params)
+    out = (; y_pred..., extra..., parameters = all_params, out_extra...)
+    return out, ChainRulesCore.ignore_derivatives((; st_new_nns..., fixed = st.fixed))
 end
 
 @generated function _scale_named(::Val{NP}, ::Val{SN}, nn_outputs, parameters) where {NP, SN}
@@ -516,31 +481,14 @@ end
     for n in FP
         push!(parts, Expr(:kw, n, :(getproperty(getproperty(st, :fixed), $(QuoteNode(n))))))
     end
+    unused = Expr[]
+    NP === () && push!(unused, :(ChainRulesCore.ignore_derivatives(nn)))
+    GP === () && push!(unused, :(ChainRulesCore.ignore_derivatives(ps)))
+    FP === () && push!(unused, :(ChainRulesCore.ignore_derivatives(st)))
+    GP === () && push!(unused, :(ChainRulesCore.ignore_derivatives(parameters)))
     return quote
-        $(NP === () ? :(ChainRulesCore.ignore_derivatives(nn)) : nothing)
-        $(GP === () ? :(ChainRulesCore.ignore_derivatives(ps)) : nothing)
-        $(FP === () ? :(ChainRulesCore.ignore_derivatives(st)) : nothing)
-        $(GP === () ? :(ChainRulesCore.ignore_derivatives(parameters)) : nothing)
+        $(unused...)
         (; $(parts...))
-    end
-end
-
-@generated function _pack_out(y_pred::NamedTuple{Y}, extra::NamedTuple{E}, all_params, out_extra::NamedTuple{O}) where {Y, E, O}
-    gets = Expr[]
-    for n in Y
-        push!(gets, Expr(:kw, n, :(getfield(y_pred, $(QuoteNode(n))))))
-    end
-    for n in E
-        push!(gets, Expr(:kw, n, :(getfield(extra, $(QuoteNode(n))))))
-    end
-    push!(gets, Expr(:kw, :parameters, :all_params))
-    for n in O
-        push!(gets, Expr(:kw, n, :(getfield(out_extra, $(QuoteNode(n))))))
-    end
-    return quote
-        $(E === () ? :(ChainRulesCore.ignore_derivatives(extra)) : nothing)
-        $(O === () ? :(ChainRulesCore.ignore_derivatives(out_extra)) : nothing)
-        (; $(gets...))
     end
 end
 
@@ -556,11 +504,6 @@ _call_mech(f, forcing, params, ::Val{nothing}) = f(; merge(forcing, params)...)
     end
     return :(f(; $(args...)))
 end
-
-_extra_params(::Val{()}, _) = NamedTuple()
-_extra_params(::Val{EX}, all_params) where {EX} = NamedTuple{EX}(all_params)
-_extra_params(::HybridModel{T, P, MM, NP, GP, FP, KW, EX}, all_params) where {T, P, MM, NP, GP, FP, KW, EX} =
-    _extra_params(Val{EX}(), all_params)
 
 function (m::HybridModel)(ds_k, ps, st)
     # Forward pass fallback when ds_k is not explicitly typed as Tuple
