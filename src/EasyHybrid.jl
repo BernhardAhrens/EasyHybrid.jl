@@ -43,7 +43,6 @@ using Random: Random, AbstractRNG, randperm, randstring
 using Reexport: @reexport
 using Statistics: Statistics, mean, cor, quantile, var
 using StyledStrings: StyledStrings, @styled_str
-using Tables: Tables
 using YAML: load_file, write_file
 using Zygote: Zygote
 using Static: False, True

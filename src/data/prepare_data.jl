@@ -57,7 +57,6 @@ function prepare_data(hm, data::DataFrame; array_type = :KeyedArray, drop_missin
     return prepare_data(hm, ds)
 end
 
-# DimStack and other Tables.jl sources share the DataFrame cleaning path
 function prepare_data(hm, data; array_type = :KeyedArray, drop_missing_rows = true)
     return prepare_data(hm, DataFrame(data); array_type, drop_missing_rows)
 end
@@ -76,7 +75,7 @@ Prepare data for training by extracting predictor/forcing and target variables b
 
 # Arguments:
 - `hm`: The Hybrid Model
-- `data`: The input data, which can be a DataFrame, KeyedArray, DimensionalData array, or any Tables.jl table (e.g. a DimStack).
+- `data`: The input data, which can be a DataFrame, KeyedArray, or DimensionalData array.
 - `array_type`: (DataFrame only) Output array type: `:KeyedArray` (default) or `:DimArray`.
 - `drop_missing_rows`: (DataFrame only) If `true` (default), drop rows where any predictor is NaN or all targets are NaN.
 

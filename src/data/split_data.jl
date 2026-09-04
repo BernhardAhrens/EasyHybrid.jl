@@ -112,8 +112,12 @@ Split data into training and validation sets, either randomly, by grouping by ID
 """
 function split_data end
 
+function getbyname(df::DataFrame, name::Symbol)
+    return df[!, name]
+end
+
 function getbyname(data, name::Symbol)
-    return Tables.getcolumn(data, name)
+    return DataFrame(data)[!, name]
 end
 
 function getbyname(ka::KeyedArray, name::Symbol)
