@@ -38,13 +38,13 @@ function compute_loss(
 end
 
 function compute_loss(
-        HM::HybridModel{T, <:Vector, MM, NP, GP, FP, KW, EX, TG, PC, SN}, ps, st,
+        HM::HybridModel{<:Any, <:Vector}, ps, st,
         ((x, forcings), (y_t, y_nan)),
         logging::LoggingLoss{SymbolicLoss{S}, ExtraLoss{Nothing}, A, true}
-    ) where {T, MM, NP, GP, FP, KW, EX, TG, PC, SN, S, A}
+    ) where {S, A}
     y_pred, st_nn = _hybrid_vector(HM, (x, forcings), ps, st, Val(false))
     st_new = ChainRulesCore.ignore_derivatives((; st_nn, fixed = st.fixed))
-    return _compute_loss(y_pred, y_t, y_nan, TG, Val(S), logging.agg), st_new, NamedTuple()
+    return _compute_loss(y_pred, y_t, y_nan, HM.targets, Val(S), logging.agg), st_new, NamedTuple()
 end
 
 function compute_loss(
@@ -127,13 +127,6 @@ end
 _get_target_ŷ(ŷ, y_t, target) =
     ŷ[target]
 
-function _target_loss(ŷ, y, y_nan, target, loss_spec)
-    y_t = _get_target_y(y, target)
-    ŷ_t = _get_target_ŷ(ŷ, y_t, target)
-    y_nan_t = _get_target_y(y_nan, target)
-    return _apply_loss(ŷ_t, y_t, y_nan_t, loss_spec)
-end
-
 function assemble_loss(ŷ, y, y_nan, targets, loss_spec)
     return [
         begin
@@ -146,12 +139,6 @@ function assemble_loss(ŷ, y, y_nan, targets, loss_spec)
             for target in targets
     ]
 end
-assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec) =
-    map(target -> _target_loss(ŷ, y, y_nan, target, loss_spec), targets)
-assemble_loss(ŷ, y::NamedTuple, y_nan::NamedTuple, targets::Tuple, loss_spec::Val) =
-    map(target -> _apply_loss(_get_target_ŷ(ŷ, y[target], target), y[target], y_nan[target], loss_spec), targets)
-assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec::PerTarget) =
-    assemble_loss(ŷ, y, y_nan, collect(targets), loss_spec)
 
 function assemble_loss(ŷ, y, y_nan, targets, loss_spec::PerTarget)
     @assert length(targets) == length(loss_spec.losses) "Length of targets and PerTarget losses tuple must match"
