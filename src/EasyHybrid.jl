@@ -19,7 +19,7 @@ using ChainRulesCore: ChainRulesCore
 using ComponentArrays: ComponentArrays, ComponentArray
 using DataFrameMacros: DataFrameMacros, @transform
 using DataFrames: DataFrames, DataFrame, GroupedDataFrame, Missing, coalesce, mapcols, select, missing, All
-using DimensionalData: DimensionalData, AbstractDimArray, AbstractDimStack, DimStack, Dim, DimArray, dims, groupby, lookup, At
+using DimensionalData: DimensionalData, AbstractDimArray, Dim, DimArray, dims, groupby, lookup, At
 # Extend axiskeys to work with DimArrays (delegates to lookup)
 AxisKeys.axiskeys(da::AbstractDimArray) = Tuple(lookup(da, d) for d in dims(da))
 AxisKeys.axiskeys(da::AbstractDimArray, i::Int) = lookup(da, dims(da)[i])
@@ -43,6 +43,7 @@ using Random: Random, AbstractRNG, randperm, randstring
 using Reexport: @reexport
 using Statistics: Statistics, mean, cor, quantile, var
 using StyledStrings: StyledStrings, @styled_str
+using Tables: Tables
 using YAML: load_file, write_file
 using Zygote: Zygote
 using Static: False, True
