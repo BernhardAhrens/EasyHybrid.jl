@@ -22,61 +22,47 @@ function compute_loss(HM::LuxCore.AbstractLuxContainerLayer, ps, st, data; loggi
 end
 
 function compute_loss(
-        HM::LuxCore.AbstractLuxContainerLayer, ps, st, ((x, forcings), (y_t, y_nan)),
-        logging::LoggingLoss{L, E, A, true}
-    ) where {L, E, A}
-    ŷ, st = HM((x, forcings), ps, st)
-    loss_value = logging.training_loss isa ParamLoss ?
-        logging.training_loss.f(ŷ, y_t, y_nan, ps, HM.targets, get(ŷ, :parameters, (;))) :
-        _compute_loss(ŷ, y_t, y_nan, HM.targets, _static_loss_spec(logging.training_loss), logging.agg)
-    ext_loss = extra_loss(logging)
-    if ext_loss !== nothing
-        extra_loss_value = ext_loss(ŷ, ps)
-        loss_value = logging.agg([loss_value, extra_loss_value...])
-    end
-    return loss_value, st, NamedTuple()
-end
-
-function compute_loss(
-        HM::HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG}, ps, st,
-        ((x, forcings), (y_t, y_nan)),
-        logging::LoggingLoss{L, E, A, true}
-    ) where {T, P, MM, NP, GP, FP, KW, SN, TG, L, E, A}
-    ŷ, st = HM((x, forcings), ps, st)
-    loss_value = logging.training_loss isa ParamLoss ?
-        logging.training_loss.f(ŷ, y_t, y_nan, ps, HM.targets, get(ŷ, :parameters, (;))) :
-        _compute_loss(ŷ, y_t, y_nan, TG, _static_loss_spec(logging.training_loss), logging.agg)
-    ext_loss = extra_loss(logging)
-    if ext_loss !== nothing
-        extra_loss_value = ext_loss(ŷ, ps)
-        loss_value = logging.agg([loss_value, extra_loss_value...])
-    end
-    return loss_value, st, NamedTuple()
-end
-
-function compute_loss(
-        HM::HybridModel{<:Any, <:Vector, MM, NP, GP, FP, KW, SN, TG}, ps, st,
+        HM::HybridModel{<:Any, <:Vector}, ps, st,
         ((x, forcings), (y_t, y_nan)),
         logging::LoggingLoss{SymbolicLoss{S}, ExtraLoss{Nothing}, A, true}
-    ) where {MM, NP, GP, FP, KW, SN, TG, S, A}
+    ) where {S, A}
     loss, st_nn = _hybrid_loss(HM, (x, forcings), ps, st, y_t, y_nan, Val(S), logging.agg)
-    st_new = ChainRulesCore.ignore_derivatives((; st_nn, fixed = st.fixed))
-    return loss, st_new, NamedTuple()
+    return loss, ChainRulesCore.ignore_derivatives((; st_nn, fixed = st.fixed)), NamedTuple()
 end
 
 function compute_loss(
         HM::LuxCore.AbstractLuxContainerLayer, ps, st, ((x, forcings), (y_t, y_nan)),
-        logging::LoggingLoss{L, E, A, false}
-    ) where {L, E, A}
-    ŷ, _ = HM((x, forcings), ps, LuxCore.testmode(st))
-    loss_value = _compute_loss(ŷ, y_t, y_nan, HM.targets, loss_types(logging), logging.agg)
+        logging::LoggingLoss
+    )
+    targets = HM.targets
     ext_loss = extra_loss(logging)
-    if ext_loss !== nothing
-        extra_loss_values = ext_loss(ŷ, ps)
-        agg_extra_loss_value = logging.agg(extra_loss_values)
-        loss_value = (; loss_value..., extra_loss = (; extra_loss_values..., Symbol(logging.agg) => agg_extra_loss_value))
+    if logging.train_mode
+        ŷ, st = HM((x, forcings), ps, st)
+        # Full-context losses (auto-detected `f(ŷ, y, y_nan, ps, targets, parameters)`)
+        # get the predictions, targets, masks, raw params `ps`, target names and the
+        # model parameters (`ŷ.parameters`), and do their own masking/aggregation;
+        # everything else uses the per-target machinery.
+        loss_value = logging.training_loss isa ParamLoss ?
+            logging.training_loss.f(ŷ, y_t, y_nan, ps, targets, get(ŷ, :parameters, (;))) :
+            _compute_loss(ŷ, y_t, y_nan, targets, training_loss(logging), logging.agg)
+        # Add extra_loss if provided
+        if ext_loss !== nothing
+            extra_loss_value = ext_loss(ŷ, ps)
+            loss_value = logging.agg([loss_value, extra_loss_value...])
+        end
+        stats = NamedTuple()
+    else
+        ŷ, _ = HM((x, forcings), ps, LuxCore.testmode(st))
+        loss_value = _compute_loss(ŷ, y_t, y_nan, targets, loss_types(logging), logging.agg)
+        # Add extra_loss entries if provided
+        if ext_loss !== nothing
+            extra_loss_values = ext_loss(ŷ, ps)
+            agg_extra_loss_value = logging.agg(extra_loss_values)
+            loss_value = (; loss_value..., extra_loss = (; extra_loss_values..., Symbol(logging.agg) => agg_extra_loss_value))
+        end
+        stats = (; ŷ...)
     end
-    return loss_value, st, (; ŷ...)
+    return loss_value, st, stats
 end
 
 function _compute_loss(ŷ, y, y_nan, targets, loss_spec, agg::Function)
@@ -155,17 +141,6 @@ function assemble_loss(ŷ, y, y_nan, targets, loss_spec)
         end
             for target in targets
     ]
-end
-assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec) =
-    map(target -> _apply_loss(_get_target_ŷ(ŷ, _get_target_y(y, target), target), _get_target_y(y, target), _get_target_y(y_nan, target), loss_spec), targets)
-assemble_loss(ŷ, y::NamedTuple, y_nan::NamedTuple, targets::Tuple, loss_spec::Val) =
-    map(target -> _apply_loss(_get_target_ŷ(ŷ, y[target], target), y[target], y_nan[target], loss_spec), targets)
-assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec::PerTarget) =
-    assemble_loss(ŷ, y, y_nan, collect(targets), loss_spec)
-
-function _compute_loss(ŷ, y::NamedTuple, y_nan::NamedTuple, targets::Tuple{Symbol}, loss_spec::Val, agg::Function)
-    t = targets[1]
-    return agg((_apply_loss(_get_target_ŷ(ŷ, y[t], t), y[t], y_nan[t], loss_spec),))
 end
 
 function assemble_loss(ŷ, y, y_nan, targets, loss_spec::PerTarget)

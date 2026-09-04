@@ -175,7 +175,3 @@ loss_spec(pt::PerTarget) = PerTarget(map(loss_spec, pt.losses))
 loss_types(logging::LoggingLoss) = map(loss_spec, logging.loss_types)
 training_loss(logging::LoggingLoss) = loss_spec(logging.training_loss)
 extra_loss(logging::LoggingLoss) = loss_spec(logging.extra_loss)
-
-_static_loss_spec(ls::SymbolicLoss{S}) where {S} = Val(S)
-_static_loss_spec(ls::LossSpec) = loss_spec(ls)
-_static_loss_spec(pt::PerTarget) = loss_spec(pt)
