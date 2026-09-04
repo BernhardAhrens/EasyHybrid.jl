@@ -6,7 +6,7 @@ function split_data(data::Tuple{Tuple, Tuple}, hybridModel; kwargs...)
 end
 
 function split_data(
-        data::Union{DataFrame, KeyedArray, Tuple, AbstractDimArray},
+        data::Union{DataFrame, KeyedArray, Tuple, AbstractDimArray, AbstractDimStack},
         hybridModel;
         split_by_id::Union{Nothing, Symbol, AbstractVector} = nothing,
         folds::Union{Nothing, AbstractVector, Symbol} = nothing,
@@ -122,6 +122,10 @@ end
 
 function getbyname(ka::AbstractDimArray, name::Symbol)
     return ka[variable = At(name)]
+end
+
+function getbyname(st::AbstractDimStack, name::Symbol)
+    return vec(parent(st[name]))
 end
 
 function view_end_dim(x_all::AbstractMatrix{T}, idx) where {T}
