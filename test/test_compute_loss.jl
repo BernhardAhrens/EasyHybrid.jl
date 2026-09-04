@@ -310,7 +310,7 @@ end
         g_fused = only(Zygote.gradient(p -> compute_loss(HM, p, st, (data[1], (data[2], y_nan)), logging)[1], ps))
         g_pub = only(
             Zygote.gradient(
-                p -> _compute_loss(HM(data[1], p, st)[1], y_t, y_nan, Tuple(targets), Val(:mse), sum),
+                p -> _compute_loss(HM(data[1], p, st)[1], y_t, y_nan, Tuple(targets), :mse, sum),
                 ps,
             )
         )

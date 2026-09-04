@@ -28,7 +28,7 @@ It combines predictive neural networks (`NNs`) with a `mechanistic_model` to for
 
 $(TYPEDFIELDS)
 """
-struct HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
+struct HybridModel{T, P, MM, NP, GP, FP, TG} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
     "Neural network(s) used to predict parameters. Can be a single `Chain` or a `NamedTuple` of `Chain`s."
     NNs::T
 
@@ -71,12 +71,11 @@ function HybridModel(
         neural_param_names, global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default, config,
     )
-    NP, GP, FP = Tuple(neural_param_names), Tuple(global_param_names), Tuple(fixed_param_names)
-    KW = _accepted_kwarg_names(
-        mechanistic_model,
-        Tuple(unique([forcing; neural_param_names; global_param_names; fixed_param_names])),
-    )
-    return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, KW, scale_nn_outputs, Tuple(targets)}(
+    return HybridModel{
+        typeof(NNs), typeof(predictors), typeof(mechanistic_model),
+        Tuple(neural_param_names), Tuple(global_param_names),
+        Tuple(fixed_param_names), Tuple(targets),
+    }(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default, config,
@@ -419,14 +418,12 @@ function _run_nn(m::HybridModel{<:Any, <:Vector}, ds_k::Tuple, ps, st)
     return scaled_nn_params, (; st_nn = st_nn), (;)
 end
 
-# Vector training: NN, scale, mechanistic model, and loss in one generated function.
 @generated function _hybrid_loss(
-        m::HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG},
+        m::HybridModel{<:Any, <:Vector, MM, NP, GP, FP, TG},
         ds_k::Tuple, ps, st, y, y_nan, ::Val{S}, agg
-    ) where {T, P, MM, NP, GP, FP, KW, SN, TG, S}
+    ) where {MM, NP, GP, FP, TG, S}
     stmts = Expr[]
     names = (NP..., GP..., FP...)
-
     if NP === ()
         push!(stmts, :(st_nn = st.st_nn))
     else
@@ -434,47 +431,39 @@ end
         push!(stmts, :(slices = eachslice(nn_out, dims = 1)))
     end
     for (i, n) in enumerate(NP)
-        rhs = SN ?
-            :(scale_single_param(Val($(QuoteNode(n))), slices[$i], m.parameters)) :
-            :(slices[$i])
+        rhs = :(m.scale_nn_outputs ? scale_single_param($(QuoteNode(n)), slices[$i], m.parameters) : slices[$i])
         push!(stmts, Expr(:(=), n, rhs))
     end
     for n in GP
-        push!(stmts, Expr(:(=), n, :(scale_single_param(Val($(QuoteNode(n))), getproperty(ps, $(QuoteNode(n))), m.parameters))))
+        push!(stmts, Expr(:(=), n, :(scale_single_param($(QuoteNode(n)), getproperty(ps, $(QuoteNode(n))), m.parameters))))
     end
     for n in FP
         push!(stmts, Expr(:(=), n, :(getproperty(st.fixed, $(QuoteNode(n))))))
     end
-
-    # Zygote drops unused generated-function args from the pullback.
     NP === () && GP === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(ps)))
-    NP === () && KW === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(ds_k)))
-    !SN && GP === () && push!(stmts, :(ChainRulesCore.ignore_derivatives(m.parameters)))
-
-    if KW === nothing
-        push!(stmts, :(all_params = (; $(names...))))
-        push!(stmts, :(y_pred = m.mechanistic_model(; merge(ds_k[2], all_params)...)))
-    else
-        args = [n in names ? Expr(:kw, n, n) : Expr(:kw, n, :(getfield(ds_k[2], $(QuoteNode(n))))) for n in KW]
-        push!(stmts, :(y_pred = m.mechanistic_model(; $(args...))))
-    end
-
+    push!(stmts, :(all_params = (; $(names...))))
+    push!(stmts, :(y_pred = m.mechanistic_model(; _mechanistic_kwargs(m.mechanistic_model, merge(ds_k[2], all_params))...)))
     if TG === ()
         push!(stmts, :(ChainRulesCore.ignore_derivatives((y, y_nan, agg))))
         push!(stmts, :(return agg(()), st_nn))
     else
-        terms = map(TG) do t
+        terms = Expr[]
+        for t in TG
             qt = QuoteNode(t)
+            yi = y <: NamedTuple ? :(getfield(y, $qt)) : :(_get_target_y(y, $qt))
+            nani = y_nan <: NamedTuple ? :(getfield(y_nan, $qt)) : :(_get_target_y(y_nan, $qt))
             loss = S === :mse ?
                 :(mean(abs2, ŷ_i[nan_i] .- y_i[nan_i])) :
-                :(_apply_loss(ŷ_i, y_i, nan_i, Val($(QuoteNode(S)))))
-            :(
-                let
-                    y_i = _get_target_y(y, $qt)
-                    ŷ_i = _get_target_ŷ(y_pred, y_i, $qt)
-                    nan_i = _get_target_y(y_nan, $qt)
-                    $loss
-                end
+                :(_apply_loss(ŷ_i, y_i, nan_i, $(QuoteNode(S))))
+            push!(
+                terms, :(
+                    let
+                        y_i = $yi
+                        ŷ_i = _get_target_ŷ(y_pred, y_i, $qt)
+                        nan_i = $nani
+                        $loss
+                    end
+                )
             )
         end
         push!(stmts, :(return agg(($(terms...),)), st_nn))

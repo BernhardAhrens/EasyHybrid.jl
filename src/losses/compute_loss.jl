@@ -166,10 +166,6 @@ function _apply_loss(ŷ, y, y_nan, loss_spec::Symbol)
     return loss_fn(ŷ, y, y_nan, Val(loss_spec))
 end
 
-function _apply_loss(ŷ, y, y_nan, loss_spec::Val)
-    return loss_fn(ŷ, y, y_nan, loss_spec)
-end
-
 function _apply_loss(ŷ, y, y_nan, loss_spec::Function)
     return loss_fn(ŷ, y, y_nan, loss_spec)
 end
