@@ -38,13 +38,30 @@ function compute_loss(
 end
 
 function compute_loss(
-        HM::HybridModel{<:Any, <:Vector}, ps, st,
+        HM::HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG}, ps, st,
+        ((x, forcings), (y_t, y_nan)),
+        logging::LoggingLoss{L, E, A, true}
+    ) where {T, P, MM, NP, GP, FP, KW, SN, TG, L, E, A}
+    ŷ, st = HM((x, forcings), ps, st)
+    loss_value = logging.training_loss isa ParamLoss ?
+        logging.training_loss.f(ŷ, y_t, y_nan, ps, HM.targets, get(ŷ, :parameters, (;))) :
+        _compute_loss(ŷ, y_t, y_nan, TG, _static_loss_spec(logging.training_loss), logging.agg)
+    ext_loss = extra_loss(logging)
+    if ext_loss !== nothing
+        extra_loss_value = ext_loss(ŷ, ps)
+        loss_value = logging.agg([loss_value, extra_loss_value...])
+    end
+    return loss_value, st, NamedTuple()
+end
+
+function compute_loss(
+        HM::HybridModel{<:Any, <:Vector, MM, NP, GP, FP, KW, SN, TG}, ps, st,
         ((x, forcings), (y_t, y_nan)),
         logging::LoggingLoss{SymbolicLoss{S}, ExtraLoss{Nothing}, A, true}
-    ) where {S, A}
-    y_pred, st_nn = _hybrid_vector(HM, (x, forcings), ps, st, Val(false))
+    ) where {MM, NP, GP, FP, KW, SN, TG, S, A}
+    loss, st_nn = _hybrid_loss(HM, (x, forcings), ps, st, y_t, y_nan, Val(S), logging.agg)
     st_new = ChainRulesCore.ignore_derivatives((; st_nn, fixed = st.fixed))
-    return _compute_loss(y_pred, y_t, y_nan, HM.targets, Val(S), logging.agg), st_new, NamedTuple()
+    return loss, st_new, NamedTuple()
 end
 
 function compute_loss(
@@ -138,6 +155,17 @@ function assemble_loss(ŷ, y, y_nan, targets, loss_spec)
         end
             for target in targets
     ]
+end
+assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec) =
+    map(target -> _apply_loss(_get_target_ŷ(ŷ, _get_target_y(y, target), target), _get_target_y(y, target), _get_target_y(y_nan, target), loss_spec), targets)
+assemble_loss(ŷ, y::NamedTuple, y_nan::NamedTuple, targets::Tuple, loss_spec::Val) =
+    map(target -> _apply_loss(_get_target_ŷ(ŷ, y[target], target), y[target], y_nan[target], loss_spec), targets)
+assemble_loss(ŷ, y, y_nan, targets::Tuple, loss_spec::PerTarget) =
+    assemble_loss(ŷ, y, y_nan, collect(targets), loss_spec)
+
+function _compute_loss(ŷ, y::NamedTuple, y_nan::NamedTuple, targets::Tuple{Symbol}, loss_spec::Val, agg::Function)
+    t = targets[1]
+    return agg((_apply_loss(_get_target_ŷ(ŷ, y[t], t), y[t], y_nan[t], loss_spec),))
 end
 
 function assemble_loss(ŷ, y, y_nan, targets, loss_spec::PerTarget)

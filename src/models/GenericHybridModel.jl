@@ -28,7 +28,7 @@ It combines predictive neural networks (`NNs`) with a `mechanistic_model` to for
 
 $(TYPEDFIELDS)
 """
-struct HybridModel{T, P, MM, NP, GP, FP, KW, SN} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
+struct HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG} <: LuxCore.AbstractLuxContainerLayer{(:NNs,)}
     "Neural network(s) used to predict parameters. Can be a single `Chain` or a `NamedTuple` of `Chain`s."
     NNs::T
 
@@ -76,7 +76,7 @@ function HybridModel(
         mechanistic_model,
         Tuple(unique([forcing; neural_param_names; global_param_names; fixed_param_names])),
     )
-    return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, KW, scale_nn_outputs}(
+    return HybridModel{typeof(NNs), typeof(predictors), typeof(mechanistic_model), NP, GP, FP, KW, scale_nn_outputs, Tuple(targets)}(
         NNs, predictors, forcing, targets, mechanistic_model, parameters,
         neural_param_names, global_param_names, fixed_param_names,
         scale_nn_outputs, start_from_default, config,
@@ -390,12 +390,9 @@ function _run_nn(m::HybridModel{<:Any, <:NamedTuple}, ds_k::Tuple, ps, st)
     return scaled_nn_params, nn_states, (; nn_outputs = nn_outputs)
 end
 
-# Vector forward: bind NN / global / fixed params and call the mechanistic model.
-# `Val(true)` also returns `all_params` so the public call can pack `parameters`.
-@generated function _hybrid_vector(
-        m::HybridModel{T, P, MM, NP, GP, FP, KW, SN},
-        ds_k::Tuple, ps, st, ::Val{need_params}
-    ) where {T, P, MM, NP, GP, FP, KW, SN, need_params}
+# Shared Vector NN / scale / mechanistic body for `_hybrid_vector` and `_hybrid_loss`.
+# `need_params` also builds `all_params` so the public call can pack `parameters`.
+function _hybrid_vector_stmts(NP, GP, FP, KW, SN, need_params)
     stmts = Expr[]
     all_names = (NP..., GP..., FP...)
 
@@ -438,8 +435,79 @@ end
         end
         push!(stmts, :(y_pred = m.mechanistic_model(; $(args...))))
     end
+    return stmts
+end
 
+@generated function _hybrid_vector(
+        m::HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG},
+        ds_k::Tuple, ps, st, ::Val{need_params}
+    ) where {T, P, MM, NP, GP, FP, KW, SN, TG, need_params}
+    stmts = _hybrid_vector_stmts(NP, GP, FP, KW, SN, need_params)
     push!(stmts, need_params ? :(return y_pred, all_params, st_nn) : :(return y_pred, st_nn))
+    return Expr(:block, stmts...)
+end
+
+# Training: same Vector forward, then the default loss, without packing `parameters`.
+@generated function _hybrid_loss(
+        m::HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG},
+        ds_k::Tuple, ps, st, y::NamedTuple, y_nan::NamedTuple, ::Val{S}, agg
+    ) where {T, P, MM, NP, GP, FP, KW, SN, TG, S}
+    stmts = _hybrid_vector_stmts(NP, GP, FP, KW, SN, false)
+    if TG === ()
+        push!(stmts, :(ChainRulesCore.ignore_derivatives((y, y_nan, agg))))
+        push!(stmts, :(return agg(()), st_nn))
+    else
+        terms = map(TG) do t
+            qt = QuoteNode(t)
+            vs = QuoteNode(S)
+            if S === :mse
+                :(
+                    let
+                        y_i = getfield(y, $qt)
+                        ŷ_i = _get_target_ŷ(y_pred, y_i, $qt)
+                        nan_i = getfield(y_nan, $qt)
+                        mean(abs2, ŷ_i[nan_i] .- y_i[nan_i])
+                    end
+                )
+            else
+                :(
+                    let
+                        y_i = getfield(y, $qt)
+                        ŷ_i = _get_target_ŷ(y_pred, y_i, $qt)
+                        nan_i = getfield(y_nan, $qt)
+                        _apply_loss(ŷ_i, y_i, nan_i, Val($vs))
+                    end
+                )
+            end
+        end
+        push!(stmts, :(return agg(($(terms...),)), st_nn))
+    end
+    return Expr(:block, stmts...)
+end
+
+@generated function _hybrid_loss(
+        m::HybridModel{T, P, MM, NP, GP, FP, KW, SN, TG},
+        ds_k::Tuple, ps, st, y, y_nan, ::Val{S}, agg
+    ) where {T, P, MM, NP, GP, FP, KW, SN, TG, S}
+    stmts = _hybrid_vector_stmts(NP, GP, FP, KW, SN, false)
+    if TG === ()
+        push!(stmts, :(ChainRulesCore.ignore_derivatives((y, y_nan, agg))))
+        push!(stmts, :(return agg(()), st_nn))
+    else
+        terms = map(TG) do t
+            qt = QuoteNode(t)
+            vs = QuoteNode(S)
+            :(
+                let
+                    y_i = _get_target_y(y, $qt)
+                    ŷ_i = _get_target_ŷ(y_pred, y_i, $qt)
+                    nan_i = _get_target_y(y_nan, $qt)
+                    _apply_loss(ŷ_i, y_i, nan_i, Val($vs))
+                end
+            )
+        end
+        push!(stmts, :(return agg(($(terms...),)), st_nn))
+    end
     return Expr(:block, stmts...)
 end
 
