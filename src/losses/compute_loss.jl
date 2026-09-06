@@ -60,12 +60,7 @@ end
 Dispatch `extra_loss` to `f(ŷ, y, ps)` when `f` has that method and no
 2-arg `f(ŷ, ps)` method; otherwise call `f(ŷ, ps)`.
 """
-function _call_extra_loss(f, ŷ, y, ps)
-    if _accepts_obs(f)
-        return f(ŷ, y, ps)
-    end
-    return f(ŷ, ps)
-end
+_call_extra_loss(f, ŷ, y, ps) = _accepts_obs(f) ? f(ŷ, y, ps) : f(ŷ, ps)
 
 function _compute_loss(ŷ, y, y_nan, targets, loss_spec, agg::Function)
     losses = assemble_loss(ŷ, y, y_nan, targets, loss_spec)
