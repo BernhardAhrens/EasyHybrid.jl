@@ -33,9 +33,10 @@ function compute_loss(
         loss_value = logging.training_loss isa ParamLoss ?
             logging.training_loss.f(ŷ, y_t, y_nan, ps, targets, get(ŷ, :parameters, (;))) :
             _compute_loss(ŷ, y_t, y_nan, targets, training_loss(logging), logging.agg)
-        # Add extra_loss if provided
+        # Add extra_loss if provided. Classic `f(ŷ, ps)` still works; `f(ŷ, y, ps)`
+        # is auto-detected so a penalty can see both predictions and observations.
         if ext_loss !== nothing
-            extra_loss_value = ext_loss(ŷ, ps)
+            extra_loss_value = _call_extra_loss(ext_loss, ŷ, y_t, ps)
             loss_value = logging.agg([loss_value, extra_loss_value...])
         end
         stats = NamedTuple()
@@ -44,13 +45,26 @@ function compute_loss(
         loss_value = _compute_loss(ŷ, y_t, y_nan, targets, loss_types(logging), logging.agg)
         # Add extra_loss entries if provided
         if ext_loss !== nothing
-            extra_loss_values = ext_loss(ŷ, ps)
+            extra_loss_values = _call_extra_loss(ext_loss, ŷ, y_t, ps)
             agg_extra_loss_value = logging.agg(extra_loss_values)
             loss_value = (; loss_value..., extra_loss = (; extra_loss_values..., Symbol(logging.agg) => agg_extra_loss_value))
         end
         stats = (; ŷ...)
     end
     return loss_value, st, stats
+end
+
+"""
+    _call_extra_loss(f, ŷ, y, ps)
+
+Dispatch `extra_loss` to `f(ŷ, y, ps)` when `f` has that method and no
+2-arg `f(ŷ, ps)` method; otherwise call `f(ŷ, ps)`.
+"""
+function _call_extra_loss(f, ŷ, y, ps)
+    if _accepts_obs(f)
+        return f(ŷ, y, ps)
+    end
+    return f(ŷ, ps)
 end
 
 function _compute_loss(ŷ, y, y_nan, targets, loss_spec, agg::Function)

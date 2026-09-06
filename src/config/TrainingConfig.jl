@@ -77,7 +77,11 @@ $(TYPEDFIELDS)
     """
     loss_types::Vector{Symbol} = [:mse, :r2]
 
-    "Additional loss `(ŷ, ps; kwargs...) -> NamedTuple` added to the training loss. Default: `nothing`."
+    """
+    Additional loss added to the training loss. Default: `nothing`.
+    Accepts `f(ŷ, ps) -> NamedTuple` or `f(ŷ, y, ps) -> NamedTuple`
+    (auto-detected) when the penalty also needs observations.
+    """
     extra_loss = nothing
 
     "Aggregation function applied to computed losses. Default: `sum`."
