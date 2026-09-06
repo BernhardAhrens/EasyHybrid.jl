@@ -30,12 +30,14 @@ end
 
 Build a ComponentArray matrix from a NamedTuple containing parameter defaults and bounds.
 
-This function converts a NamedTuple where each value is a tuple of (default, lower, upper) bounds
-into a ComponentArray with named axes for easy parameter management in hybrid models.
+This function converts a NamedTuple where each value is a tuple of (default, lower, upper)
+or `(default, lower, upper, :log)` into a ComponentArray with named axes. Only the first
+three elements are stored; the optional fourth (`:linear` or `:log`) is read by
+[`ParameterContainer`](@ref) / [`scale_single_param`](@ref).
 
 # Arguments
-- `parameter_defaults_and_bounds::NamedTuple`: A NamedTuple where each key is a parameter name and each value is a 
-  tuple of (default, lower, upper) for that parameter.
+- `parameter_defaults_and_bounds::NamedTuple`: A NamedTuple where each key is a parameter name and each value is
+  `(default, lower, upper)` or `(default, lower, upper, :linear|:log)`.
 
 # Returns
 - `ComponentArray`: A 2D ComponentArray with:
@@ -49,8 +51,8 @@ into a ComponentArray with named axes for easy parameter management in hybrid mo
 parameter_defaults_and_bounds = (
     θ_s = (0.464f0, 0.302f0, 0.700f0),     # Saturated water content [cm³/cm³]
     h_r = (1500.0f0, 1500.0f0, 1500.0f0),  # Pressure head at residual water content [cm]
-    α   = (log(0.103f0), log(0.01f0), log(7.874f0)),  # Shape parameter [cm⁻¹]
-    n   = (log(3.163f0 - 1), log(1.100f0 - 1), log(20.000f0 - 1)),  # Shape parameter [-]
+    α   = (0.103f0, 0.01f0, 7.874f0, :log),  # Shape parameter [cm⁻¹], log scale
+    n   = (3.163f0 - 1, 1.100f0 - 1, 20.000f0 - 1, :log),  # Shape parameter [-], log scale
 )
 
 # Build the ComponentArray
@@ -63,8 +65,8 @@ parameter_matrix[:, :upper]   # Get all upper bounds
 ```
 
 # Notes
-- The function expects each value in the NamedTuple to be a tuple with exactly 3 elements
-- The order of bounds is always (default, lower, upper)
+- The first three elements are always (default, lower, upper); an optional fourth is `:linear` or `:log`
+- Prefer `(default, lower, upper, :log)` over pre-logging the three values so `parameters.name` stays in physical units
 - The resulting ComponentArray can be used for parameter optimization and constraint handling
 """
 function build_parameter_matrix(parameter_defaults_and_bounds::NamedTuple)

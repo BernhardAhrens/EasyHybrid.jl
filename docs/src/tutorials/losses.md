@@ -194,6 +194,21 @@ The same loss works whether `σ` is declared as a global parameter (one value pe
 target) or an NN-predicted parameter (one value per observation) — only the
 model construction changes. See the synthetic respiration tutorial for both.
 
+A noise scale is positive and often poorly identified on a linear `[lower, upper]`
+interval (a small default near a wide upper bound sits in the flat tail of the
+sigmoid). Pass a fourth element `:log` so the default, lower and upper stay in
+physical units while the optimizer works in log space:
+
+```julia
+parameters = (;
+    # ... mechanistic parameters ...
+    sigma = (σ_obs, σ_obs / 100, σ_obs * 100, :log),
+)
+```
+
+`parameters.sigma` after scaling is still the physical `σ` (not `log σ`). A
+default at the geometric mean of the bounds initializes at unconstrained `0`.
+
 ::: warning
 
 - The 6-argument function is detected only when it has no 2-argument method;

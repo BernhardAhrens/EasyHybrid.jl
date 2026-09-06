@@ -5,18 +5,28 @@ export HybridModel, ParameterContainer, constructHybridModel
 
 A container for holding the parameter definitions of a model, including their default values, lower bounds, and upper bounds.
 
+Each entry of `values` is either `(default, lower, upper)` (linear min–max, the
+default) or `(default, lower, upper, :log)` / `(..., :linear)`. Log-scale
+parameters stay in physical units in the table and after scaling; the sigmoid
+is applied in log space so a default at the geometric mean of the bounds
+initializes at unconstrained `0` (maximum gradient).
+
 $(TYPEDFIELDS)
 """
 mutable struct ParameterContainer{NT <: NamedTuple, T}
-    "The raw parameter definitions. A `NamedTuple` where each entry is a tuple of `(default, lower, upper)` bounds for a parameter."
+    "The raw parameter definitions. A `NamedTuple` where each entry is `(default, lower, upper)` or `(default, lower, upper, :linear|:log)`."
     values::NT
 
     "A `ComponentArray` matrix representation of the parameter bounds, organized for efficient access by name and bound type."
     table::T
 
+    "Per-parameter scale (`:linear` or `:log`) used by [`scale_single_param`](@ref)."
+    scales::NamedTuple
+
     function ParameterContainer(values::NT) where {NT <: NamedTuple}
+        scales = parameter_scales(values)
         table = build_parameter_matrix(values)
-        return new{NT, typeof(table)}(values, table)
+        return new{NT, typeof(table)}(values, table, scales)
     end
 end
 
