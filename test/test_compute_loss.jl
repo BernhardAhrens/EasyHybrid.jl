@@ -376,12 +376,13 @@ end
         )
 
         loss_value, _, _ = compute_loss(HM, ps, st, (data[1], (data[2], y_nan)); logging = logging)
-        @test haskey(loss_value, :nll_for_log)
+        nll_key = EasyHybrid._loss_name(nll_for_log)
+        @test haskey(loss_value, nll_key)
         @test haskey(loss_value, :mse)
-        @test haskey(loss_value.nll_for_log, :sum)
+        @test haskey(loss_value[nll_key], :sum)
         ŷ_actual, _ = HM(data[1], ps, st)
         expected = nll_for_log(ŷ_actual, y_t, y_nan, ps, targets, ŷ_actual.parameters)
-        @test loss_value.nll_for_log.sum ≈ expected
+        @test loss_value[nll_key].sum ≈ expected
     end
 
     @testset "Training mode with extra_loss(ŷ, y, ps)" begin
