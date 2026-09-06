@@ -361,6 +361,50 @@ end
         @test haskey(stats, :var2)
     end
 
+    @testset "Evaluation mode with full-context loss_types" begin
+        function nll_for_log(ŷ, y, y_nan, ps, targets, parameters)
+            y1 = EasyHybrid._get_target_y(y, :var1)
+            return sum(abs2, ŷ.var1 .- y1)
+        end
+
+        logging = LoggingLoss(
+            loss_types = [nll_for_log, :mse],
+            training_loss = nll_for_log,
+            extra_loss = nothing,
+            train_mode = false,
+            agg = sum
+        )
+
+        loss_value, _, _ = compute_loss(HM, ps, st, (data[1], (data[2], y_nan)); logging = logging)
+        nll_key = EasyHybrid._loss_name(nll_for_log)
+        @test haskey(loss_value, nll_key)
+        @test haskey(loss_value, :mse)
+        @test haskey(loss_value[nll_key], :sum)
+        ŷ_actual, _ = HM(data[1], ps, st)
+        expected = nll_for_log(ŷ_actual, y_t, y_nan, ps, targets, ŷ_actual.parameters)
+        @test loss_value[nll_key].sum ≈ expected
+    end
+
+    @testset "Training mode with extra_loss(ŷ, y, ps)" begin
+        function extra_loss_obs(ŷ, y, ps)
+            y1 = EasyHybrid._get_target_y(y, :var1)
+            return (; obs_var1 = sum(abs, y1))
+        end
+
+        logging = LoggingLoss(
+            loss_types = [:mse],
+            training_loss = :mse,
+            extra_loss = extra_loss_obs,
+            train_mode = true
+        )
+
+        loss_value, _, _ = compute_loss(HM, ps, st, (data[1], (data[2], y_nan)); logging = logging)
+        ŷ_actual, _ = HM(data[1], ps, st)
+        main_loss = _compute_loss(ŷ_actual, y_t, y_nan, targets, :mse, sum)
+        expected = sum([main_loss, extra_loss_obs(ŷ_actual, y_t, ps)...])
+        @test loss_value ≈ expected
+    end
+
     @testset "Training mode with weight_l2 extra_loss" begin
         λ = 1.0f-4
         function nn_weight_extra_loss(ŷ, ps)

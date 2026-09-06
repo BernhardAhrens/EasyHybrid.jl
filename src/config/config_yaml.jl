@@ -33,12 +33,17 @@ drops all of the actual default and bound values.
 function get_parameters_config(pc::ParameterContainer)
     out = OrderedDict{String, Any}()
     for name in keys(pc.values)
-        d, l, u = pc.values[name]
-        out[string(name)] = OrderedDict{String, Any}(
-            "default" => d,
-            "lower" => l,
-            "upper" => u,
+        spec = pc.values[name]
+        entry = OrderedDict{String, Any}(
+            "default" => spec[1],
+            "lower" => spec[2],
+            "upper" => spec[3],
         )
+        scale = param_scale(pc, name)
+        if scale !== :linear
+            entry["scale"] = string(scale)
+        end
+        out[string(name)] = entry
     end
     return out
 end

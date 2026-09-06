@@ -69,7 +69,10 @@ Base.eltype(::Type{PerTarget{T}}) where {T <: Tuple} = eltype(T)
 A structure to define a logging loss function for hybrid models.
 
 # Arguments
-- `loss_types`: A vector of loss specifications (Symbol, Function or Tuple)
+- `loss_types`: A vector of loss specifications (Symbol, Function or Tuple).
+  The first entry is the best-checkpoint / early-stopping metric. A 6-arg
+  full-context function is auto-detected here too (e.g. put `gaussian_nll`
+  first to select on validation NLL).
   - Symbol: predefined loss, e.g. `:mse`
   - Function: custom loss function, e.g. `custom_loss`
   - Tuple: function with args/kwargs:
@@ -77,7 +80,9 @@ A structure to define a logging loss function for hybrid models.
     - `(f, kwargs)`: keyword args, e.g. `(scaled_loss, (scale=2.0,))`
     - `(f, args, kwargs)`: both, e.g. `(complex_loss, (0.5,), (scale=2.0,))`
 - `training_loss`: The loss specification to use during training (same format as above)
-- `extra_loss`: Optional function `(ŷ, ps; kwargs...) -> NamedTuple` (or splattable collection) added to training loss (default: `nothing`)
+- `extra_loss`: Optional function `(ŷ, ps) -> NamedTuple`, or
+  `f(ŷ, y, ps) -> NamedTuple` (auto-detected) when the penalty also needs
+  observations, added to training loss (default: `nothing`)
 - `agg`: Function to aggregate losses across targets, e.g. `sum` or `mean`
 - `train_mode`: If true, uses `training_loss`; otherwise uses `loss_types`.
 
@@ -144,6 +149,15 @@ classic masked signature `f(ŷ_masked, y_masked)` (2 positional args). Returns
 matching both arities) fall back to the classic 2-arg path.
 """
 _accepts_params(f) = hasmethod(f, NTuple{6, Any}) && !hasmethod(f, NTuple{2, Any})
+
+"""
+    _accepts_obs(f) -> Bool
+
+Auto-detect whether an `extra_loss` `f` uses `f(ŷ, y, ps)` (predictions,
+observations, and parameters) instead of the classic `f(ŷ, ps)`. Returns
+`true` only when `f` has a 3-argument method and no 2-argument method.
+"""
+_accepts_obs(f) = hasmethod(f, NTuple{3, Any}) && !hasmethod(f, NTuple{2, Any})
 
 _to_loss_spec(t::Tuple{<:Function, <:Tuple}) = ParameterizedLoss(t[1], t[2])
 _to_loss_spec(t::Tuple{<:Function, <:NamedTuple}) = ParameterizedLoss(t[1], (), t[2])

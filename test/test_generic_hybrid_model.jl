@@ -112,6 +112,26 @@ end
         inv_scaled_b = EasyHybrid.scale_single_param_minmax(:b, pc)
         @test inv_scaled_b ≈ 0.0f0  # inverse sigmoid of 0.5 is 0.0
     end
+
+    @testset "log-scale parameter" begin
+        # default at the geometric mean of [0.02, 200] is 2 → unconstrained 0
+        log_params = (sigma = (2.0f0, 0.02f0, 200.0f0, :log), linear = (2.0f0, 0.02f0, 200.0f0))
+        pc_log = ParameterContainer(log_params)
+        @test EasyHybrid.param_scale(pc_log, :sigma) === :log
+        @test EasyHybrid.param_scale(pc_log, :linear) === :linear
+        @test EasyHybrid.scale_single_param_minmax(:sigma, pc_log) ≈ 0.0f0
+        @test EasyHybrid.scale_single_param(:sigma, [0.0f0], pc_log)[1] ≈ 2.0f0
+        # large positive unconstrained → near upper; large negative → near lower
+        @test EasyHybrid.scale_single_param(:sigma, [20.0f0], pc_log)[1] ≈ 200.0f0 rtol = 1.0f-3
+        @test EasyHybrid.scale_single_param(:sigma, [-20.0f0], pc_log)[1] ≈ 0.02f0 rtol = 1.0f-3
+        # linear scale with the same bounds does *not* init at 0
+        @test EasyHybrid.scale_single_param_minmax(:linear, pc_log) < -3.0f0
+        @test_throws ArgumentError ParameterContainer((sigma = (2.0f0, -0.1f0, 10.0f0, :log),))
+        @test_throws ArgumentError ParameterContainer((sigma = (2.0f0, 0.1f0, 10.0f0, :exp),))
+        cfg = EasyHybrid.get_parameters_config(pc_log)
+        @test cfg["sigma"]["scale"] == "log"
+        @test !haskey(cfg["linear"], "scale")
+    end
 end
 
 @testset "GenericHybridModel - HybridModel" begin

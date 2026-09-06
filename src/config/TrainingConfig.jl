@@ -71,13 +71,20 @@ $(TYPEDFIELDS)
     training_loss = :mse
 
     """
-    Vector of loss types to compute during training. Default: `[:mse, :r2]`.
-    The first entry is used for plotting in the dynamic trainboard and can be
-    increasing (e.g. NSE) or decreasing (e.g. RMSE).
+    Vector of loss types to compute during evaluation. Default: `[:mse, :r2]`.
+    The first entry is the early-stopping / best-checkpoint metric and the
+    trainboard y-axis. Entries may be a predefined `Symbol`, a masked custom
+    loss `f(ŷ, y)`, or a full-context `f(ŷ, y, y_nan, ps, targets, parameters)`
+    (auto-detected, same as `training_loss`). Increasing metrics (e.g. NSE)
+    or decreasing ones (e.g. RMSE, NLL) are both allowed.
     """
-    loss_types::Vector{Symbol} = [:mse, :r2]
+    loss_types::Vector = [:mse, :r2]
 
-    "Additional loss `(ŷ, ps; kwargs...) -> NamedTuple` added to the training loss. Default: `nothing`."
+    """
+    Additional loss added to the training loss. Default: `nothing`.
+    Accepts `f(ŷ, ps) -> NamedTuple` or `f(ŷ, y, ps) -> NamedTuple`
+    (auto-detected) when the penalty also needs observations.
+    """
     extra_loss = nothing
 
     "Aggregation function applied to computed losses. Default: `sum`."

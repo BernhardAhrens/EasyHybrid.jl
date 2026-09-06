@@ -189,6 +189,10 @@ using EasyHybrid: bestdirection, isbetter, check_training_loss, Minimize, Maximi
         @test isbetter(1.0, 0.5, Minimize()) == false
         @test isbetter(0.8, 0.5, Maximize()) == true
         @test isbetter(0.5, 0.8, Maximize()) == false
+
+        nll_like(ŷ, y, y_nan, ps, targets, parameters) = 1.0
+        @test isbetter(0.5, 1.0, nll_like) == true
+        @test isbetter(1.0, 0.5, nll_like) == false
     end
 
     @testset "check_training_loss" begin
