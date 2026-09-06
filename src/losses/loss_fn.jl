@@ -188,6 +188,7 @@ bestdirection(::Any) = Minimize()
 bestdirection(::Union{Val{:pearson}, Val{:r2}, Val{:nse}, Val{:kge}}) = Maximize()
 
 isbetter(new, best, loss_type) = isbetter(new, best, bestdirection(Val(loss_type)))
+isbetter(new, best, ::Function) = isbetter(new, best, Minimize())
 
 # trait-dispatched implementations
 isbetter(new, best, ::Minimize) = new < best

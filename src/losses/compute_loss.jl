@@ -42,7 +42,7 @@ function compute_loss(
         stats = NamedTuple()
     else
         ŷ, _ = HM((x, forcings), ps, LuxCore.testmode(st))
-        loss_value = _compute_loss(ŷ, y_t, y_nan, targets, loss_types(logging), logging.agg)
+        loss_value = _compute_loss(ŷ, y_t, y_nan, targets, loss_types(logging), logging.agg, ps)
         # Add extra_loss entries if provided
         if ext_loss !== nothing
             extra_loss_values = _call_extra_loss(ext_loss, ŷ, y_t, ps)
@@ -72,17 +72,27 @@ function _compute_loss(ŷ, y, y_nan, targets, loss_spec, agg::Function)
     return agg(losses)
 end
 
-function _compute_loss(ŷ, y, y_nan, targets, loss_types::Vector, agg::Function)
-    out_loss_types = [
-        begin
-                losses = assemble_loss(ŷ, y, y_nan, targets, loss_type)
-                agg_loss = agg(losses)
-                NamedTuple{(targets..., Symbol(agg))}([losses..., agg_loss])
-            end
-            for loss_type in loss_types
-    ]
+function _compute_loss(ŷ, y, y_nan, targets, loss_types::Vector, agg::Function, ps = nothing)
+    out_loss_types = [_logged_loss(ŷ, y, y_nan, targets, loss_type, agg, ps) for loss_type in loss_types]
     _names = [_loss_name(lt) for lt in loss_types]
     return NamedTuple{Tuple(_names)}([out_loss_types...])
+end
+
+"""
+    _logged_loss(ŷ, y, y_nan, targets, loss_type, agg, ps)
+
+One evaluation-mode metric. Full-context `f(ŷ, y, y_nan, ps, targets, parameters)`
+returns a scalar stored under `Symbol(agg)` so early stopping can select on it.
+Everything else is the usual per-target masked metric plus an aggregated field.
+"""
+function _logged_loss(ŷ, y, y_nan, targets, loss_type, agg, ps)
+    if loss_type isa Function && _accepts_params(loss_type)
+        val = loss_type(ŷ, y, y_nan, ps, targets, get(ŷ, :parameters, (;)))
+        return NamedTuple{(Symbol(agg),)}((val,))
+    end
+    losses = assemble_loss(ŷ, y, y_nan, targets, loss_type)
+    agg_loss = agg(losses)
+    return NamedTuple{(targets..., Symbol(agg))}([losses..., agg_loss])
 end
 
 """

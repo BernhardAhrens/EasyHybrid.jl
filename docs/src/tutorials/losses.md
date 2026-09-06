@@ -198,8 +198,9 @@ model construction changes. See the synthetic respiration tutorial for both.
 
 - The 6-argument function is detected only when it has no 2-argument method;
   classic `f(ŷ, y)` losses are unaffected.
-- Full-context losses are only used for `training_loss`. Entries in `loss_types`
-  (logging/metrics) still use the masked `f(ŷ_masked, y_masked)` form.
+- Full-context losses can be used for `training_loss` and as entries in
+  `loss_types` (the first `loss_types` entry is the early-stopping metric).
+  Masked `f(ŷ_masked, y_masked)` metrics are unchanged.
 - Because the loss needs the *full* `ŷ`/`parameters`, it cannot use the bare
   2-argument `f(ŷ, y)` signature (that one is per-target and masked). Use the
   6-argument form and simply ignore the arguments you don't need.

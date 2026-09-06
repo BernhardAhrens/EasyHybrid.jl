@@ -69,7 +69,10 @@ Base.eltype(::Type{PerTarget{T}}) where {T <: Tuple} = eltype(T)
 A structure to define a logging loss function for hybrid models.
 
 # Arguments
-- `loss_types`: A vector of loss specifications (Symbol, Function or Tuple)
+- `loss_types`: A vector of loss specifications (Symbol, Function or Tuple).
+  The first entry is the best-checkpoint / early-stopping metric. A 6-arg
+  full-context function is auto-detected here too (e.g. put `gaussian_nll`
+  first to select on validation NLL).
   - Symbol: predefined loss, e.g. `:mse`
   - Function: custom loss function, e.g. `custom_loss`
   - Tuple: function with args/kwargs:
