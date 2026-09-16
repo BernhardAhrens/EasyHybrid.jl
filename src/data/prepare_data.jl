@@ -105,6 +105,9 @@ function get_prediction_target_names(hm)
         end
     end
     predictors_forcing = unique(predictors_forcing)
+    if hasproperty(hm, :state_names)
+        filter!(n -> n ∉ hm.state_names, predictors_forcing)
+    end
 
     if isempty(predictors_forcing)
         @warn "Note that you don't have predictors or forcing variables."
