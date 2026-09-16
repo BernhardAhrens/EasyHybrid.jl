@@ -1,6 +1,8 @@
 # H2CM in EasyHybrid: one keyword step + constructHybridODE.
 # Physics follows zavud/h2cm (water_cycle_forward + carbon_cycle_forward).
-# Operator splitting stays inside the step; EasyHybrid only does Euler `u ← u + du`.
+# Operator splitting is only used to form fluxes; positivity is clamped on
+# those rates (melt ≤ swe, Es/T ≤ remaining SM, …). EasyHybrid does Euler
+# `u ← u + du` (dt = 1). The step does not return next-state storages.
 #
 # Mapping:
 #   H2CM LSTM 1 (water partitioning) → group :water
@@ -30,7 +32,7 @@ function h2cm_step(;
 
     snow_acc = prec .* beta_snow .* is_snow
     snow_melt = min.(swe, max.(tair_c, 0.0f0) .* alpha_snow)
-    swe_next = max.(swe .+ snow_acc .- snow_melt, 0.0f0)
+    dswe = snow_acc .- snow_melt
 
     rn_mm = max.(rn .* 0.0864f0 ./ 2.45f0, 0.0f0)
     rainfall = prec .* is_rain
@@ -38,29 +40,29 @@ function h2cm_step(;
     rn_mm = rn_mm .- Ei
 
     ET_pot = min.(rn_mm, SM)
-    Es = (1.0f0 .- fAPAR) .* ET_pot .* alpha_Es
-    SM_es = SM .- Es
+    Es = min.((1.0f0 .- fAPAR) .* ET_pot .* alpha_Es, SM)
+    SM_left = SM .- Es
     rn_mm = rn_mm .- Es
 
-    ET_pot = min.(rn_mm, SM_es)
-    T = fAPAR .* ET_pot .* alpha_T
-    SM_T = SM_es .- T
+    ET_pot = min.(rn_mm, SM_left)
+    T = min.(fAPAR .* ET_pot .* alpha_T, SM_left)
+    SM_left = SM_left .- T
 
-    water_in = rainfall .+ snow_melt .- Ei
-    sm_deficit = sm_max .- SM_T
+    water_in = max.(rainfall .+ snow_melt .- Ei, 0.0f0)
+    sm_deficit = max.(sm_max .- SM_left, 0.0f0)
     r_soil_frac = min.(1.0f0, sm_deficit ./ max.(water_in, ϵ)) .* alpha_r_soil
-    r_soil = r_soil_frac .* water_in
-    SM_next = SM_T .+ r_soil
-    rel_SM = SM_next ./ sm_max
+    r_soil = min.(r_soil_frac .* water_in, sm_deficit)
+    dSM = .-Es .- T .+ r_soil
+    rel_SM = (SM .+ dSM) ./ sm_max
 
     r_gw_frac = (1.0f0 .- r_soil_frac) .* alpha_r_gw
     r_gw = r_gw_frac .* water_in
     runoff_s = (1.0f0 .- r_soil_frac) .* (1.0f0 .- alpha_r_gw) .* water_in
-    baseflow = GW .* beta_baseflow
-    GW_next = GW .+ r_gw .- baseflow
+    baseflow = min.(GW .* beta_baseflow, GW)
+    dGW = r_gw .- baseflow
     runoff = runoff_s .+ baseflow
     ET = Ei .+ Es .+ T
-    tws = swe_next .+ GW_next .+ SM_next
+    tws = (swe .+ dswe) .+ (SM .+ dSM) .+ (GW .+ dGW)
 
     gpp = T .* wue .* CO2 .* beta_co2
     npp = gpp .* cue
@@ -70,9 +72,9 @@ function h2cm_step(;
     nee = ter .- gpp
 
     return (;
-        dswe = swe_next .- swe, dSM = SM_next .- SM, dGW = GW_next .- GW,
+        dswe, dSM, dGW,
         ET, runoff, tws, gpp, npp, nee, ter, rel_SM, fAPAR,
-        swe = swe_next, SM = SM_next, GW = GW_next,
+        swe, SM, GW,
     )
 end
 
@@ -145,3 +147,4 @@ out, _ = h2cm(x, ps, st)
 out.ET
 out.nee
 out.rel_SM
+out.dswe
