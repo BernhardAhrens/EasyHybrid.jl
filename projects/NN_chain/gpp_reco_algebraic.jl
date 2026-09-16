@@ -1,23 +1,26 @@
-# Same-step GPP → Reco for algebraic `constructHybridModel` (proposal only).
+# Same-step GPP → Reco without changing the mechanistic model (proposal).
 #
-# Today MultiNN runs every net on data columns, then calls the process once.
-# Reco cannot see live GPP from the GPP/RUE net in that forward.
-# Precomputed GPP as a *table column* already works; these three ways feed
-# *this step's* GPP (or RUE) into the Reco net. No `feedback` keyword:
-# names in `predictors` that are not data are resolved in-step.
+# User API (same `mNEE` with or without the GPP→Rb edge — no `feedback` kw,
+# no `Rb(GPP)` callable in the process):
 #
-# Shared physics (FluxPart / Q10 partitioning):
-#   GPP  = SW_IN * RUE / 12.011
-#   Reco = Rb * Q10^((TA - 15)/10)
-#   NEE  = Reco - GPP
+#   constructHybridModel(
+#       (RUE = [:SW_IN, :VPD], Rb = [:TA, :GPP]),
+#       forcing, targets, mNEE, parameters, [:Q10],
+#   )
+#
+# `mNEE` always takes **values** (`Rb` is an array), same as today's hybrid
+# and the same as ODEHybrid. `:GPP` in `Rb`'s predictors is not a data column;
+# EasyHybrid resolves it in this forward, then calls `mNEE` as usual.
+#
+# ODEHybrid already does this across time: list `:GPP` (or `:npp`) in predictors,
+# process unchanged, next step sees last process output. Algebraic needs the
+# same listing rule *inside one forward*.
 
 mGPP(; SW_IN, RUE) = SW_IN .* RUE ./ 12.011f0
 
-mReco(; Rb, Q10, TA, tref = 15.0f0) = Rb .* Q10 .^ (0.1f0 .* (TA .- tref))
-
 function mNEE(; SW_IN, TA, RUE, Rb, Q10)
     GPP = mGPP(; SW_IN, RUE)
-    Reco = mReco(; Rb, Q10, TA)
+    Reco = Rb .* Q10 .^ (0.1f0 .* (TA .- 15.0f0))
     return (; NEE = Reco .- GPP, GPP, Reco, RUE, Rb, Q10)
 end
 
@@ -29,59 +32,62 @@ parameters = (
 forcing = [:SW_IN, :TA]
 targets = [:NEE]
 
-# -----------------------------------------------------------------------------
-# 1) NN → NN (topological order)
+# Resolve each name in a group's predictors:
+#   in the data              → column (as today)
+#   another NN group name    → that net's output (topo order)          [A]
+#   else                     → process output, not yet a value         [B]
 #
-# Reco predictors may include another *group name*. That group's NN output is
-# concatenated in the same forward, then the process runs once.
-# Reco sees RUE (or a group that directly predicts GPP), not process GPP.
-# Closest to current MultiNN (`keys(predictors)` stay neural params).
-
-# proposed:
-# constructHybridModel(
-#     (RUE = [:SW_IN, :VPD], Rb = [:TA, :RUE]),
-#     forcing, targets, mNEE, parameters, [:Q10],
-# )
-#
-# Forward: RUE net (data only) → Rb net (data + RUE) → mNEE.
-# Cycle in the predictor graph would error.
+# [A] never needs a second process call. [B] does, unless we wait for ODE.
 
 # -----------------------------------------------------------------------------
-# 2) Staged process (Reco sees flux GPP)
+# A) Sibling NN output (topo). Process once. mNEE unchanged.
 #
-# Reco predictors include `:GPP`, which is not data and not an NN. After the
-# data-only nets, a GPP fragment runs; Reco net sees that flux; then NEE.
-# Same "list the name in predictors" rule as ODE carry, but same algebraic step.
-
-# proposed:
-# constructHybridModel(
-#     (RUE = [:SW_IN, :VPD], Rb = [:TA, :GPP]),
-#     forcing, targets,
-#     (GPP = mGPP, NEE = mNEE),
-#     parameters, [:Q10],
-# )
+#   (RUE = [:SW_IN, :VPD], Rb = [:TA, :RUE])
 #
-# Forward: RUE net → mGPP(; SW_IN, RUE) → Rb net (data + GPP) → mNEE.
-# Mechanistic model as a NamedTuple of stages; later stages see earlier outputs
-# plus NN params. This is the one that matches "GPP net then Reco net" with
-# GPP as photosynthesis, not as an extra NN head.
+# Reco sees RUE, not flux GPP. Fine when the extra predictor *is* a neural
+# param. Not the FluxPart case (`GPP = SW_IN * RUE / 12`).
 
 # -----------------------------------------------------------------------------
-# 3) Two-pass, one process function (no new constructor args)
+# B) Process output as predictor — two-pass, mNEE unchanged (closest to ODE).
 #
-# Keep `mechanistic_model = mNEE`. If a predictor is missing from the data,
-# run all nets whose predictors are data-only, call mNEE, take matching names
-# from that return (GPP), run the remaining nets, call mNEE again.
+#   (RUE = [:SW_IN, :VPD], Rb = [:TA, :GPP])
 #
-# proposed (API unchanged):
-# constructHybridModel(
-#     (RUE = [:SW_IN, :VPD], Rb = [:TA, :GPP]),
-#     forcing, targets, mNEE, parameters, [:Q10],
-# )
+# Forward:
+#   1. NNs whose predictors are all data (RUE).
+#   2. Call mNEE with those values + a stand-in for missing neural params (Rb).
+#   3. Read GPP from the return (same names as ODE carry).
+#   4. Run remaining NNs (Rb with TA + GPP).
+#   5. Call mNEE again with the real Rb. Keep this return.
 #
-# Needs mNEE to accept a missing/unused Rb on the first call, *or* a small
-# allow-list of first-pass outputs (e.g. only names already determined by
-# RUE + forcing). More implicit than (2); process is invoked twice.
+# Stand-in for step 2 (mNEE still requires `Rb` as a value):
+#   B1. `default(parameters).Rb` (already on ParameterContainer)
+#   B2. zeros, same shape as a batch
+#   B3. omit Rb if we introspect kwargs — would *require* a default on mNEE
+#       → user *does* change the process; drop this
+#
+# Prefer B1: first pass is a legal call of the same function. For FluxPart,
+# GPP does not depend on Rb, so the stand-in only affects first-pass Reco/NEE,
+# which we discard. Do **not** `ignore_derivatives` on pass 1: RUE → GPP →
+# Rb-net must stay in the tape. Drop first-pass Reco/NEE only.
+#
+# If GPP depended on Rb (algebraic cycle), B1 is wrong; then C.
 
-# Prefer (2) when GPP is physics; (1) when Reco should see another NN output
-# directly; (3) only if we refuse extra constructor surface.
+# -----------------------------------------------------------------------------
+# C) Fixed point, still one mNEE.
+#
+#   Rb₀ = default(parameters).Rb
+#   repeat: GPP = mNEE(...; Rb).GPP; Rb = NN(TA, GPP)  until stable
+#   final mNEE with that Rb
+#
+# Needed only if GPP and Reco depend on each other. FluxPart is a DAG; B is enough.
+
+# -----------------------------------------------------------------------------
+# D) Callable `Rb(GPP)` injected as a kwarg (previous discussion).
+#
+# Process becomes `rb = Rb(GPP)` instead of `Reco = Rb .* …`. That *is* a
+# second mechanistic model — the thing we want to avoid. Keep D as an
+# internal implementation of B (hybrid builds a closure, evaluates it
+# between the two mNEE calls). User-facing `mNEE` still sees an array.
+
+# Prefer B1 for "list :GPP in predictors, mNEE unchanged". Same rule as
+# ODEHybrid; the extra cost is a second process eval in one algebraic step.
