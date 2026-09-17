@@ -2,7 +2,6 @@ using Random
 using Statistics
 using Zygote
 using Lux
-using LuxCore
 using Logging
 using DataFrames
 using EasyHybrid
