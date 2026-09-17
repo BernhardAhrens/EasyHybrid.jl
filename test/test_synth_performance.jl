@@ -133,8 +133,16 @@ end
         t_hm_mse = _median_s(f_hm_mse)
         t_step = _median_s(f_step)
         ratio = _paired_median_ratio(f_cl, f_lux)
+        cap = SYNTH_COMPUTE_LOSS_VS_LUX * (1 + SYNTH_SLOWDOWN_TOLERANCE)
 
-        @info "synthetic RbQ10 timings (median s)" t_fwd t_loss t_hm_mse t_cl t_lux t_step ratio
+        println("synthetic RbQ10 steps (median µs):")
+        println("  HybridModel forward           ", round(t_fwd * 1.0e6; digits = 1))
+        println("  compute_loss value            ", round(t_loss * 1.0e6; digits = 1))
+        println("  Lux same-math gradient        ", round(t_lux * 1.0e6; digits = 1))
+        println("  compute_loss gradient         ", round(t_cl * 1.0e6; digits = 1))
+        println("  HybridModel + MSE gradient    ", round(t_hm_mse * 1.0e6; digits = 1))
+        println("  single_train_step!            ", round(t_step * 1.0e6; digits = 1))
+        println("  compute_loss / Lux (paired)   ", round(ratio; digits = 3), "  (cap ", round(cap; digits = 3), ")")
 
         @testset "step: HybridModel forward" begin
             @test t_fwd > 0
