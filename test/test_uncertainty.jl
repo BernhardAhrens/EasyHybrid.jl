@@ -155,6 +155,20 @@ end
     )
 end
 
+@testset "Uncertainty: Langevin empty-leaf dispatch" begin
+    # Empty NN leaves (InputBatchNorm / identity wrappers) have `NamedTuple{}`
+    # parameters and Zygote returns `nothing` for their gradient. The update
+    # must not be method-ambiguous.
+    rng = MersenneTwister(1)
+    empty = NamedTuple()
+    @test EasyHybrid._langevin_leaf(empty, nothing, 0.01f0, 0.01f0, rng) === empty
+    x = (layer_1 = NamedTuple(), w = Float32[1.0])
+    g = (layer_1 = nothing, w = Float32[0.5])
+    y = EasyHybrid._langevin_leaf(x, g, 0.01f0, 0.0f0, rng)
+    @test y.layer_1 == NamedTuple()
+    @test y.w ≈ Float32[1.0 - 0.01 * 0.5]
+end
+
 @testset "Uncertainty: SGLD for globals and latents" begin
     df = _uq_data(200)
     m = _model_global()   # neural :rb (latent), global :Q10
