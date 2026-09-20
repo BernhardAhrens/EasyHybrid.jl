@@ -71,5 +71,6 @@ include("data/data.jl")
 include("losses/losses.jl")
 include("training/training.jl")
 include("io/io.jl")
+include("uncertainty/uncertainty.jl")
 
 end
