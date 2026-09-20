@@ -9,10 +9,10 @@ using DataFrames
 # -----------------------------------------------------------------------------
 function _uq_data(n; seed = 1)
     rng = MersenneTwister(seed)
-    ta      = Float32.(rand(rng, n) .* 30 .- 5)
-    sw_pot  = Float32.(rand(rng, n))
+    ta = Float32.(rand(rng, n) .* 30 .- 5)
+    sw_pot = Float32.(rand(rng, n))
     dsw_pot = Float32.(rand(rng, n) .* 2 .- 1)
-    rb   = 1.5f0 .+ 2.0f0 .* sw_pot .+ 0.5f0 .* (dsw_pot .^ 2)
+    rb = 1.5f0 .+ 2.0f0 .* sw_pot .+ 0.5f0 .* (dsw_pot .^ 2)
     reco = rb .* 2.0f0 .^ (0.1f0 .* (ta .- 15.0f0))
     reco .+= 0.05f0 .* Float32.(randn(rng, n)) .* reco
     return DataFrame(ta = ta, sw_pot = sw_pot, dsw_pot = dsw_pot, reco = reco)
@@ -38,8 +38,10 @@ _model_nodropout() = constructHybridModel(
     hidden_layers = [8, 8], activation = relu, scale_nn_outputs = true, input_batchnorm = false,
 )
 
-const _TRAIN_KW = (; nepochs = 8, batchsize = 64, opt = RMSProp(0.01),
-    show_progress = false, plotting = false, save_training = false)
+const _TRAIN_KW = (;
+    nepochs = 8, batchsize = 64, opt = RMSProp(0.01),
+    show_progress = false, plotting = false, save_training = false,
+)
 
 @testset "Uncertainty: dropout detection" begin
     @test EasyHybrid.dropout_rates(_model_dropout()) == [0.3, 0.3]
@@ -111,9 +113,11 @@ end
 
 @testset "Uncertainty: pure NN model (SingleNNModel)" begin
     df = _uq_data(300)
-    nn = constructNNModel(_PRED, [:reco];
+    nn = constructNNModel(
+        _PRED, [:reco];
         hidden_layers = Chain(Dense(8, 8, relu), Dropout(0.3), Dense(8, 8, relu), Dropout(0.3)),
-        activation = relu, scale_nn_outputs = true, input_batchnorm = false)
+        activation = relu, scale_nn_outputs = true, input_batchnorm = false
+    )
     @test nn isa EasyHybrid.SingleNNModel
     @test EasyHybrid.dropout_rates(nn) == [0.3, 0.3]
 
@@ -147,7 +151,8 @@ end
 
     # explicit seeds honored / validated
     @test_throws ArgumentError estimate_uncertainty(
-        DeepEnsemble(n_models = 3, seeds = [1, 2]), _model_global(), df; verbose = false, _TRAIN_KW...)
+        DeepEnsemble(n_models = 3, seeds = [1, 2]), _model_global(), df; verbose = false, _TRAIN_KW...
+    )
 end
 
 @testset "Uncertainty: SGLD for globals and latents" begin
@@ -157,8 +162,10 @@ end
 
     # :global samples Q10, leaves NN (and therefore rb) almost unmoved
     ug = estimate_uncertainty(
-        SGLD(n_samples = 12, n_burnin = 20, n_thin = 2, lr = 0.01, temperature = 0.05,
-            batchsize = 64, scope = :global, seed = 7),
+        SGLD(
+            n_samples = 12, n_burnin = 20, n_thin = 2, lr = 0.01, temperature = 0.05,
+            batchsize = 64, scope = :global, seed = 7
+        ),
         m, df, res; verbose = false,
     )
     @test ug isa UncertaintyResult
@@ -174,8 +181,10 @@ end
 
     # :nn samples weights → latents vary; Q10 stays at the MAP point
     un = estimate_uncertainty(
-        SGLD(n_samples = 12, n_burnin = 20, n_thin = 2, lr = 0.005, temperature = 0.02,
-            batchsize = 64, scope = :nn, seed = 11),
+        SGLD(
+            n_samples = 12, n_burnin = 20, n_thin = 2, lr = 0.005, temperature = 0.02,
+            batchsize = 64, scope = :nn, seed = 11
+        ),
         m, df, res; verbose = false,
     )
     @test isempty(un.params)
@@ -185,8 +194,10 @@ end
 
     # :all samples both
     ua = estimate_uncertainty(
-        SGLD(n_samples = 8, n_burnin = 15, n_thin = 2, lr = 0.005, temperature = 0.02,
-            batchsize = 64, scope = :all, seed = 3),
+        SGLD(
+            n_samples = 8, n_burnin = 15, n_thin = 2, lr = 0.005, temperature = 0.02,
+            batchsize = 64, scope = :all, seed = 3
+        ),
         m, df, res; verbose = false,
     )
     @test haskey(ua.params, :Q10)

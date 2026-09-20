@@ -229,8 +229,10 @@ function Base.show(io::IO, ::MIME"text/plain", r::UncertaintyResult)
     for t in r.targets
         μ = r.mean[t]
         σ = r.std[t]
-        println(io, "  • target $(t): mean std = $(round(mean(σ); digits = 4)) over $(length(μ)) obs ",
-            "(σ range $(round(minimum(σ); digits = 4))–$(round(maximum(σ); digits = 4)))")
+        println(
+            io, "  • target $(t): mean std = $(round(mean(σ); digits = 4)) over $(length(μ)) obs ",
+            "(σ range $(round(minimum(σ); digits = 4))–$(round(maximum(σ); digits = 4)))"
+        )
     end
     for g in keys(r.params)
         p = r.params[g]
@@ -478,23 +480,27 @@ function estimate_uncertainty(
     )
     # Guard 1: MC dropout cannot represent uncertainty of estimated global params.
     if !isempty(_global_param_names(model))
-        throw(ArgumentError(
-            "MC dropout is not applicable: the model estimates global parameter(s) " *
-            "$(_global_param_names(model)). Global (physical) parameters are single point " *
-            "estimates that dropout does not perturb, so MC dropout would report no " *
-            "uncertainty for them. Use SGLD (scope = :global or :all), DeepEnsemble, or Bootstrap instead."
-        ))
+        throw(
+            ArgumentError(
+                "MC dropout is not applicable: the model estimates global parameter(s) " *
+                    "$(_global_param_names(model)). Global (physical) parameters are single point " *
+                    "estimates that dropout does not perturb, so MC dropout would report no " *
+                    "uncertainty for them. Use SGLD (scope = :global or :all), DeepEnsemble, or Bootstrap instead."
+            )
+        )
     end
 
     # Guard 2: dropout must be present (and was therefore active during training,
     # since training always runs in trainmode in EasyHybrid).
     rates = dropout_rates(model)
     if isempty(rates)
-        throw(ArgumentError(
-            "MC dropout requires Dropout layer(s) in the neural network, but none were " *
-            "found. Rebuild the model with dropout, e.g. " *
-            "hidden_layers = Chain(Dense(n, h, relu), Dropout(0.2), Dense(h, h, relu), Dropout(0.2))."
-        ))
+        throw(
+            ArgumentError(
+                "MC dropout requires Dropout layer(s) in the neural network, but none were " *
+                    "found. Rebuild the model with dropout, e.g. " *
+                    "hidden_layers = Chain(Dense(n, h, relu), Dropout(0.2), Dense(h, h, relu), Dropout(0.2))."
+            )
+        )
     end
     if all(iszero, rates)
         @warn "All Dropout layers have probability 0; MC dropout will produce zero uncertainty."
@@ -619,11 +625,13 @@ function estimate_uncertainty(
         verbose::Bool = true,
     )
     if method.scope == :global && isempty(_global_param_names(model))
-        throw(ArgumentError(
-            "SGLD scope = :global requires estimated global parameter(s), but this model " *
-            "has none. Use scope = :nn or :all to sample neural-network weights (which " *
-            "induce a posterior over latent/process parameters)."
-        ))
+        throw(
+            ArgumentError(
+                "SGLD scope = :global requires estimated global parameter(s), but this model " *
+                    "has none. Use scope = :nn or :all to sample neural-network weights (which " *
+                    "induce a posterior over latent/process parameters)."
+            )
+        )
     end
 
     rng = method.seed === nothing ? Random.default_rng() : Random.MersenneTwister(method.seed)
@@ -703,9 +711,11 @@ function _sgld_step(model, ps, st, data, loss_fn, η, σ, rng, scope)
         l, st2, _ = loss_fn(model, p, st, data)
         (l, st2)
     end
-    isfinite(loss) || throw(ErrorException(
-        "SGLD produced a non-finite loss (loss = $loss). Try a smaller `lr` or `temperature`."
-    ))
+    isfinite(loss) || throw(
+        ErrorException(
+            "SGLD produced a non-finite loss (loss = $loss). Try a smaller `lr` or `temperature`."
+        )
+    )
     gs = first(back((one(loss), nothing)))
     return _sgld_update(ps, gs, η, σ, rng, scope, model), st_new, loss
 end
@@ -741,7 +751,14 @@ function _sgld_update_keys(ps::ComponentArray, gs, η, σ, rng, keep)
     return ps_new
 end
 
+# Zygote returns `nothing` for unused / empty parameter leaves (e.g. InputBatchNorm
+# or identity wrappers). Those leaves must stay put. The `::Nothing` methods are
+# spelled out per leaf type so they are not ambiguous with the structured methods
+# below (Julia would otherwise not know whether to match on `x` or on `g`).
 _langevin_leaf(x, ::Nothing, η, σ, rng) = x
+_langevin_leaf(x::NamedTuple, ::Nothing, η, σ, rng) = x
+_langevin_leaf(x::AbstractArray, ::Nothing, η, σ, rng) = x
+_langevin_leaf(x::Number, ::Nothing, η, σ, rng) = x
 
 function _langevin_leaf(x::NamedTuple, g, η, σ, rng)
     return NamedTuple{keys(x)}(
