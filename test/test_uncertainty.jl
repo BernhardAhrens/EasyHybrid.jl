@@ -109,6 +109,10 @@ end
     @test length(u.params.Q10.samples) == 3
     @test u.metadata.bootstrap == false
     @test length(u.metadata.seeds) == 3
+
+    up = estimate_uncertainty(DeepEnsemble(n_models = 2), m, df; verbose = false, parallel = true, _TRAIN_KW...)
+    @test up.n == 2
+    @test length(up.mean.reco) == nrow(df)
 end
 
 @testset "Uncertainty: pure NN model (SingleNNModel)" begin

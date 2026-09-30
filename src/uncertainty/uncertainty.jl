@@ -1,6 +1,8 @@
 export UncertaintyMethod, MCDropout, DeepEnsemble, Bootstrap, SGLD
 export UncertaintyResult, estimate_uncertainty
 
+import LinearAlgebra
+
 # =============================================================================
 # Uncertainty quantification for hybrid models
 # =============================================================================
@@ -461,9 +463,10 @@ or [`SGLD`](@ref).
   * `estimate_uncertainty(m::SGLD, model, data, train_output; …)` — continues
     from `train_output` with Langevin noise; no retraining from scratch. See
     [`SGLD`](@ref) for `scope` (`:all` / `:global` / `:nn`).
-  * `estimate_uncertainty(m::DeepEnsemble, model, data; train_kwargs...)` and
-    `estimate_uncertainty(m::Bootstrap, model, data; train_kwargs...)` — (re)train
+  * `estimate_uncertainty(m::DeepEnsemble, model, data; parallel = false, train_kwargs...)`
+    and `estimate_uncertainty(m::Bootstrap, model, data; train_kwargs...)` — (re)train
     `n_models` members; all `train_kwargs` are forwarded to [`train`](@ref).
+    `parallel = true` trains the deep-ensemble members on separate threads.
 
 # Common keyword arguments
 - `eval_data`: data on which predictions/uncertainty are computed. Defaults to
@@ -529,9 +532,31 @@ function estimate_uncertainty(
 end
 
 # --- Deep ensemble & bootstrap (shared runner) -------------------------------
+function _train_ensemble_member!(
+        i, seed, preds, param_preds, latent_preds, model, data, x_eval;
+        use_bootstrap, merged_kwargs, verbose, n_models, parallel,
+    )
+    # A separate RNG per member keeps bootstrap draws reproducible and
+    # independent of the training seed. Parallel members must not share the
+    # caller's columns: training replaces missing values in place.
+    member_data = if use_bootstrap
+        bootstrap_resample(data, Random.MersenneTwister(seed))
+    elseif parallel
+        deepcopy(data)
+    else
+        data
+    end
+    member_kwargs = merge(merged_kwargs, (; random_seed = seed))
+    verbose && @info "Uncertainty: training ensemble member $i/$n_models (seed = $seed, bootstrap = $use_bootstrap)"
+    res = train(model, member_data; member_kwargs...)
+    res === nothing && throw(ErrorException("Training member $i returned nothing (data preparation failed)."))
+    preds[i], param_preds[i], latent_preds[i] = _predict_full(model, x_eval, res.ps, LuxCore.testmode(res.st))
+    return nothing
+end
+
 function _ensemble_uncertainty(
         method::UncertaintyMethod, model::UQModel, data;
-        seeds::Vector{Int}, use_bootstrap::Bool, eval_data, quantiles, verbose, train_kwargs,
+        seeds::Vector{Int}, use_bootstrap::Bool, eval_data, quantiles, verbose, parallel, train_kwargs,
     )
     x_eval = prepare_data(model, eval_data)[1]
     n_models = length(seeds)
@@ -543,15 +568,29 @@ function _ensemble_uncertainty(
     preds = Vector{NamedTuple}(undef, n_models)
     param_preds = Vector{NamedTuple}(undef, n_models)
     latent_preds = Vector{NamedTuple}(undef, n_models)
-    for (i, seed) in enumerate(seeds)
-        # A separate RNG per member keeps bootstrap draws reproducible and
-        # independent of the training seed.
-        member_data = use_bootstrap ? bootstrap_resample(data, Random.MersenneTwister(seed)) : data
-        member_kwargs = merge(merged_kwargs, (; random_seed = seed))
-        verbose && @info "Uncertainty: training ensemble member $i/$n_models (seed = $seed, bootstrap = $use_bootstrap)"
-        res = train(model, member_data; member_kwargs...)
-        res === nothing && throw(ErrorException("Training member $i returned nothing (data preparation failed)."))
-        preds[i], param_preds[i], latent_preds[i] = _predict_full(model, x_eval, res.ps, LuxCore.testmode(res.st))
+    member_kw = (;
+        use_bootstrap, merged_kwargs, verbose, n_models, parallel,
+    )
+    if parallel
+        blas = LinearAlgebra.BLAS.get_num_threads()
+        LinearAlgebra.BLAS.set_num_threads(1)
+        try
+            Threads.@threads for i in 1:n_models
+                _train_ensemble_member!(
+                    i, seeds[i], preds, param_preds, latent_preds, model, data, x_eval;
+                    member_kw...,
+                )
+            end
+        finally
+            LinearAlgebra.BLAS.set_num_threads(blas)
+        end
+    else
+        for i in 1:n_models
+            _train_ensemble_member!(
+                i, seeds[i], preds, param_preds, latent_preds, model, data, x_eval;
+                member_kw...,
+            )
+        end
     end
 
     q = (Float64(quantiles[1]), Float64(quantiles[2]))
@@ -565,7 +604,7 @@ end
 function estimate_uncertainty(
         method::DeepEnsemble, model::UQModel, data;
         eval_data = data, quantiles::Tuple{<:Real, <:Real} = (0.025, 0.975),
-        verbose::Bool = true, train_kwargs...,
+        verbose::Bool = true, parallel::Bool = false, train_kwargs...,
     )
     seeds = if method.seeds === nothing
         collect(1:method.n_models) .* 101 .+ 17   # deterministic, well-spread
@@ -578,7 +617,7 @@ function estimate_uncertainty(
         method, model, data;
         seeds = seeds, use_bootstrap = method.bootstrap,
         eval_data = eval_data, quantiles = quantiles, verbose = verbose,
-        train_kwargs = NamedTuple(train_kwargs),
+        parallel = parallel, train_kwargs = NamedTuple(train_kwargs),
     )
 end
 
