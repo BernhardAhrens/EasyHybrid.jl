@@ -6,7 +6,7 @@ function split_data(data::Tuple{Tuple, Tuple}, hybridModel; kwargs...)
 end
 
 function split_data(
-        data::Union{DataFrame, KeyedArray, Tuple, AbstractDimArray},
+        data,
         hybridModel;
         split_by_id::Union{Nothing, Symbol, AbstractVector} = nothing,
         folds::Union{Nothing, AbstractVector, Symbol} = nothing,
@@ -114,6 +114,10 @@ function split_data end
 
 function getbyname(df::DataFrame, name::Symbol)
     return df[!, name]
+end
+
+function getbyname(data, name::Symbol)
+    return DataFrame(data)[!, name]
 end
 
 function getbyname(ka::KeyedArray, name::Symbol)

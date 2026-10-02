@@ -122,6 +122,11 @@ const RbQ10_PARAMS = (
         out = trainshort(sdata; model_name = "test_12")
         @test !isnothing(out)
 
+        st = DimStack((; ta = df.ta, sw_pot = df.sw_pot, dsw_pot = df.dsw_pot, reco = df.reco, id = df.id), (Dim{:obs}(1:nrow(df)),))
+        @test Array(prepare_data(model, df)[1][1]) == Array(prepare_data(model, st)[1][1])
+        out = trainshort(st; split_by_id = :id, model_name = "test_dimstack")
+        @test !isnothing(out)
+
         # # mat = vcat(ka[1], ka[2])
         # da = DimArray(ka, (Dim{:variable}(ka.keys[1]), Dim{:batch_size}(1:size(ka, 2))))'
         # ka = prepare_data(model, da)

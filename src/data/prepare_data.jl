@@ -57,6 +57,10 @@ function prepare_data(hm, data::DataFrame; array_type = :KeyedArray, drop_missin
     return prepare_data(hm, ds)
 end
 
+function prepare_data(hm, data; array_type = :KeyedArray, drop_missing_rows = true)
+    return prepare_data(hm, DataFrame(data); array_type, drop_missing_rows)
+end
+
 function prepare_data(hm, data::Tuple; kwargs...)
     return data
 end
