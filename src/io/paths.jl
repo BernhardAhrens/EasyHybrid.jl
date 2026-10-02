@@ -1,6 +1,7 @@
 function resolve_paths(cfg::TrainConfig)
     folder = get_output_path(; folder_to_save = cfg.output_folder)
-    suffix = cfg.model_name == "" ? "" : "_$(cfg.model_name)"
+    name = replace(cfg.model_name, r"\.jld2$" => "")
+    suffix = name == "" ? "" : "_$name"
 
     @info "Training outputs will be saved to: $folder"
 

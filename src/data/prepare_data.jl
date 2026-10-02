@@ -95,7 +95,9 @@ Returns a tuple of (predictors_forcing, targets) names.
 function get_prediction_target_names(hm)
     targets = hm.targets
     predictors = hm.predictors
-    forcings = hm.forcing
+    # Pure neural-network models (e.g. `SingleNNModel`, `MultiNNModel`) have no
+    # forcing variables and therefore no `forcing` field; treat them as empty.
+    forcings = hasproperty(hm, :forcing) ? hm.forcing : Symbol[]
 
     if isempty(predictors)
         @warn "Note that you don't have predictors variables."

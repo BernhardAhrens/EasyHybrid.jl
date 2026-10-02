@@ -342,7 +342,11 @@ end
 
 # Forward pass for SingleNNModel
 function (m::SingleNNModel)(ds_k, ps, st)
-    predictors = toArray(ds_k, m.predictors)
+    # The training pipeline passes `(x, forcings)`; `x` is already the predictor
+    # matrix produced by `prepare_data`. A raw labeled array may also be passed
+    # directly, in which case we still select the predictor columns.
+    x = ds_k isa Tuple ? first(ds_k) : ds_k
+    predictors = x isa AbstractArray ? x : toArray(x, m.predictors)
     nn_out, st_nn = LuxCore.apply(m.NN, predictors, ps.ps, st.st_nn)
     nn_cols = eachrow(nn_out)
     nn_params = NamedTuple(zip(m.targets, nn_cols))
@@ -360,9 +364,13 @@ end
 
 # Forward pass for MultiNNModel
 function (m::MultiNNModel)(ds_k, ps, st)
+    # The training pipeline passes `(x, forcings)`; for a `MultiNNModel`, `x` is a
+    # NamedTuple of per-network predictor matrices produced by `prepare_data`. A
+    # raw labeled array may also be passed directly.
+    x = ds_k isa Tuple ? first(ds_k) : ds_k
     nn_inputs = NamedTuple()
     for (nn_name, predictors) in pairs(m.predictors)
-        da = toArray(ds_k, predictors)
+        da = x isa NamedTuple ? x[nn_name] : toArray(x, predictors)
         nn_inputs = merge(nn_inputs, NamedTuple{(nn_name,), Tuple{typeof(da)}}((da,)))
     end
     nn_outputs = NamedTuple()
