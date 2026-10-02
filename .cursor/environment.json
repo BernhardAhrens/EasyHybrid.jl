@@ -1,0 +1,5 @@
+{
+  "name": "EasyHybrid.jl",
+  "user": "ubuntu",
+  "install": "bash /agent/repos/EasyHybrid.jl/.cursor/install.sh"
+}
